@@ -53,19 +53,31 @@ function toGemini(messages) {
     return { role: "user", parts: m.content.map((p) => (p.type === "image" ? { inlineData: { mimeType: p.mediaType, data: p.data } } : { text: String(p.text ?? "") })) };
   });
 }
-async function callGemini({ model, system, messages, tools, maxTokens, json }) {
+// "Thinking" tokens are billed/counted as output and were most of the usage → keep it minimal except for "complex".
+function thinking(model, tier) {
+  if (process.env.GEMINI_THINKING === "default" || tier === "complex") return {};
+  if (/gemini-2\.5-pro/.test(model)) return { thinkingConfig: { thinkingBudget: 128 } };
+  if (/gemini-2\.5/.test(model)) return { thinkingConfig: { thinkingBudget: 0 } };
+  return { thinkingConfig: { thinkingLevel: tier === "quick" ? "minimal" : "low" } };
+}
+async function callGemini({ model, system, messages, tools, maxTokens, json, tier }) {
   const body = {
     contents: toGemini(messages),
     ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
     ...(tools?.length ? { tools: [{ functionDeclarations: tools.map((t) => ({ name: t.name, description: t.description || "", parametersJsonSchema: t.inputSchema || { type: "object", properties: {} } })) }] } : {}),
-    generationConfig: { maxOutputTokens: maxTokens, ...(json && !tools?.length ? { responseMimeType: "application/json" } : {}) },
+    generationConfig: { maxOutputTokens: maxTokens, ...(json && !tools?.length ? { responseMimeType: "application/json" } : {}), ...thinking(model, tier) },
   };
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   let r;
   try {
     r = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": config.ai.geminiKey }, body: JSON.stringify(body), signal: AbortSignal.timeout(120000) });
   } catch (e) { throw fail(502, "upstream_error", "Gemini: " + e.message); }
-  const data = await r.json().catch(() => ({}));
+  let data = await r.json().catch(() => ({}));
+  if (r.status === 400 && body.generationConfig.thinkingConfig && /thinking/i.test(data?.error?.message || "")) {
+    delete body.generationConfig.thinkingConfig;
+    r = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": config.ai.geminiKey }, body: JSON.stringify(body), signal: AbortSignal.timeout(120000) });
+    data = await r.json().catch(() => ({}));
+  }
   if (!r.ok) {
     const msg = data?.error?.message || `HTTP ${r.status}`;
     throw fail(r.status === 429 ? 429 : r.status >= 500 ? 502 : 400, r.status === 429 ? "rate_limited" : r.status >= 500 ? "upstream_error" : "bad_request", "Gemini: " + msg);
@@ -77,12 +89,12 @@ async function callGemini({ model, system, messages, tools, maxTokens, json }) {
   const calls = parts.filter((p) => p.functionCall).map((p, i) => ({ id: p.functionCall.id || `gcall_${i}`, name: p.functionCall.name, input: p.functionCall.args || {} }));
   const u = data.usageMetadata || {};
   return { text, truncated: cand.finishReason === "MAX_TOKENS", calls, raw: parts, model,
-    usage: { in: u.promptTokenCount || 0, out: (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0), cacheRead: u.cachedContentTokenCount || 0 } };
+    usage: { in: u.promptTokenCount || 0, out: (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0), thoughts: u.thoughtsTokenCount || 0, cacheRead: u.cachedContentTokenCount || 0 } };
 }
 
 export async function generate({ tier = "default", system, messages, tools, maxTokens = 2000, json = false }) {
   const model = modelFor(tier);
   return config.ai.provider === "gemini"
-    ? callGemini({ model, system, messages, tools, maxTokens, json })
+    ? callGemini({ model, system, messages, tools, maxTokens, json, tier })
     : callAnthropic({ model, system, messages, tools, maxTokens });
 }

@@ -56,7 +56,7 @@ export default async function apiRoutes(app) {
 
   // ---- AI (Claude or Gemini, see AI_PROVIDER) ----
   app.post("/ai/sample", { bodyLimit: 16 * 1024 * 1024, config: { rateLimit: { max: 40, timeWindow: "1 minute" } } }, async (req, reply) => {
-    try { return await sampleRequest(req.user, req.body || {}); }
+    try { return await sampleRequest(req.user, req.body || {}, req.log); }
     catch (e) {
       if (e.status === 402) throw e;
       if (e.code && e.status && e.status < 500) return reply.code(e.status).send({ error: e.code, message: e.message });

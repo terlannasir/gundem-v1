@@ -4,7 +4,7 @@ Capacitor 8 (Swift Package Manager, CocoaPods lazım deyil). İnterfeys tətbiqi
 
 ```bash
 npm install
-npm run build:web -- --api https://SENIN-SERVERIN.onrender.com   # interfeysi yığır (../server/app-dan)
+npm run build:web -- --api https://gundem-sesi.onrender.com   # interfeysi yığır (../server/app-dan)
 npx cap sync ios
 npx cap open ios
 ```

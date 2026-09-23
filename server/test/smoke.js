@@ -168,14 +168,14 @@ ok(r.json().payload.trashed === true, "trash_file");
 const sampleReq = (body) => app.inject({ method: "POST", url: "/api/ai/sample", headers: H, payload: body });
 r = await sampleReq({ messages: [{ role: "user", content: "Brifinq" }], json: true, modelTier: "default" });
 ok(r.statusCode === 200 && r.json().stop === "end" && JSON.parse(r.json().text).headline === "Sakit gün", "sample: JSON answer");
-if (PROVIDER === "gemini") ok(aiCalls.at(-1).body.generationConfig.responseMimeType === "application/json" && aiCalls.at(-1).url.includes("gemini-3.5-flash:") && aiCalls.at(-1).headers["x-goog-api-key"] === "g-test", "gemini: json mode, smart model, key header");
+if (PROVIDER === "gemini") ok(aiCalls.at(-1).body.generationConfig.responseMimeType === "application/json" && aiCalls.at(-1).url.includes("gemini-3.5-flash:") && aiCalls.at(-1).headers["x-goog-api-key"] === "g-test" && aiCalls.at(-1).body.generationConfig.thinkingConfig?.thinkingLevel === "low" && aiCalls.at(-1).body.generationConfig.maxOutputTokens === 1500, "gemini: json mode, smart model, key header, low thinking, 1500 cap");
 else ok(aiCalls.at(-1).body.system[0].cache_control?.type === "ephemeral" && aiCalls.at(-1).body.model === "claude-sonnet-5", "anthropic: prompt caching, smart model");
 const tools = [{ name: "search_mail", description: "Poçtda axtar", inputSchema: { type: "object", properties: { query: { type: "string" } } } }];
 const convo = [{ role: "user", content: [{ type: "text", text: "Hesabat məktubu hardadır?" }, { type: "image", mediaType: "image/png", data: "iVBORw0KGgo=" }] }];
 r = await sampleReq({ messages: convo, tools, modelTier: "quick", round: 0 });
 const t1 = r.json();
 ok(t1.stop === "tool_use" && t1.calls[0].name === "search_mail" && t1.calls[0].input.query === "hesabat", "sample: tool call returned to the page");
-if (PROVIDER === "gemini") ok(aiCalls.at(-1).url.includes("flash-lite") && aiCalls.at(-1).body.contents[0].parts[1].inlineData.mimeType === "image/png", "gemini: quick tier → lite model, image inline");
+if (PROVIDER === "gemini") ok(aiCalls.at(-1).body.generationConfig.thinkingConfig?.thinkingLevel === "minimal" && aiCalls.at(-1).url.includes("flash-lite") && aiCalls.at(-1).body.contents[0].parts[1].inlineData.mimeType === "image/png", "gemini: quick tier → lite model, image inline");
 r = await sampleReq({ messages: [...convo, { role: "assistant", raw: t1.raw }, { role: "user", toolResults: [{ id: t1.calls[0].id, name: "search_mail", output: "2 məktub tapıldı" }] }], tools, round: 1 });
 ok(r.json().stop === "end" && r.json().text === "Hazırdır: 2 məktub tapıldı", "sample: tool result round → final answer");
 if (PROVIDER === "gemini") { const c = aiCalls.at(-1).body.contents; ok(c[1].parts[0].thoughtSignature === "sig123" && c[2].parts[0].functionResponse.id === "fc1", "gemini: thought signature + call id echoed back"); }

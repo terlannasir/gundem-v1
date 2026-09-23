@@ -64,6 +64,8 @@ globalThis.fetch = async (url, init) => {
   const body = JSON.parse(init.body), last = body.contents.at(-1).parts, text = last.map((p) => p.text || "").join(" ");
   ai.push(text.slice(0, 80));
   let parts;
+  if (/brifinqini/.test(text)) { globalThis.__briefChars = text.length; globalThis.__briefHasPromo = /Trendyol|Kapital Bank/.test(text); }
+  if (/bölmələrə ayır/.test(text)) globalThis.__sortChars = text.length;
   if (/brifinqini/.test(text)) parts = [{ text: JSON.stringify({ headline: "Bu gün hesabat günüdür", summary: "Aysel Q3 hesabatını gözləyir. Saat 15:00-da komanda görüşü var.", priorities: [{ threadId: "t1", title: "Q3 hesabatı", reason: "Aysel cümə 17:00-a qədər gözləyir", action: "Hesabatı göndər", level: "high" }], tasks: ["Q3 hesabatını hazırla"] }) }];
   else if (/bölmələrə ayır/.test(text)) parts = [{ text: "{}" }];
   else if (body.tools?.length && !last.some((p) => p.functionResponse)) parts = [{ functionCall: { id: "c1", name: "search_mail", args: { query: "hesabat" } }, thoughtSignature: "s" }];
@@ -194,7 +196,8 @@ try {
   await p.waitForSelector("#gd-login button", { timeout: 8000 });
   ok(await p.evaluate(() => !localStorage.getItem("gundem.auth.token")), "sign-out clears token and shows login");
   ok(!errors.length, "no page errors" + (errors.length ? ": " + errors.slice(0, 5).join(" | ") : ""));
-  console.log("AI calls:", ai.length);
+  console.log("AI calls:", ai.length, "brief prompt chars:", globalThis.__briefChars, "sort prompt chars:", globalThis.__sortChars);
+  ok(globalThis.__briefHasPromo === false, "brief prompt skips promo/receipt/notification mails");
 } catch (e) { fail++; console.log("FAIL exception", e.message); }
 await browser.close(); await app.close(); await pool.end();
 console.log(`\n${pass} passed, ${fail} failed`);

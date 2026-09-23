@@ -57,7 +57,7 @@ function cleanMessages(list) {
   });
 }
 
-export async function sampleRequest(user, body = {}) {
+export async function sampleRequest(user, body = {}, log) {
   const messages = cleanMessages(body.messages);
   const tools = Array.isArray(body.tools) ? body.tools.slice(0, MAX_TOOLS).map((t) => ({ name: String(t.name).slice(0, 64), description: String(t.description || "").slice(0, 2000), inputSchema: t.inputSchema && typeof t.inputSchema === "object" ? t.inputSchema : undefined })) : undefined;
   const tier = ["quick", "default", "complex"].includes(body.modelTier) ? body.modelTier : "default";
@@ -70,8 +70,10 @@ export async function sampleRequest(user, body = {}) {
     "Heç vaxt bir şeyi göndərdiyini, sildiyini və ya dəyişdiyini iddia etmə, əgər bunu edən alət çağırılmayıbsa.",
     body.json ? "Cavabı yalnız etibarlı JSON kimi qaytar — izah və ``` olmadan." : "",
   ].filter(Boolean).join("\n");
-  const r = await generate({ tier, system, messages, tools, maxTokens: Math.min(Number(body.maxTokens) || 4000, 8000), json: !!body.json });
+  const cap = body.json ? 1500 : tier === "quick" ? 1200 : 3000;   // output cap per answer (JSON brief/sort are short)
+  const r = await generate({ tier, system, messages, tools, maxTokens: Math.min(Number(body.maxTokens) || cap, 8000), json: !!body.json });
   await record(user.id, { countRequest: round === 0, model: r.model, usage: r.usage });
+  log?.info({ ai: { user: user.id, tier, json: !!body.json, tools: tools?.length || 0, round, model: r.model, in: r.usage.in, out: r.usage.out, thoughts: r.usage.thoughts || 0, what: body.label || undefined } }, "ai usage");
   return r.calls.length
     ? { stop: "tool_use", text: r.text, calls: r.calls, raw: r.raw }
     : { stop: "end", text: r.text, truncated: r.truncated };

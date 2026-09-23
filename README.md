@@ -67,7 +67,7 @@ Cədvəlləri özün yaratmağa ehtiyac yoxdur — server ilk açılışda onlar
    - `GOOGLE_CLIENT_ID` → hələlik `temp` yaz
    - `GOOGLE_CLIENT_SECRET` → hələlik `temp` yaz
 4. **Apply** → 2–4 dəqiqə gözlə. Servis **Live** olanda yuxarıda ünvanı görəcəksən, məsələn:
-   **`https://gundem-ab12.onrender.com`** — bu sənin **SERVER ÜNVANIN**-dır. Yaz, hər yerdə lazım olacaq.
+   **`https://gundem-sesi.onrender.com`** — bu sənin **SERVER ÜNVANIN**-dır. Yaz, hər yerdə lazım olacaq.
 5. Yoxla: brauzerdə `SERVER ÜNVANIN/health` aç → `{"ok":true}` görməlisən.
 
 > Pulsuz planda server 15 dəqiqə istifadə olunmayanda "yatır". Sonra ilk açılış 30–60 saniyə çəkir. Tətbiq bu vaxt "Server oyanır…" yazır. Oyaq saxlamaq istəsən, **cron-job.org** saytında pulsuz olaraq hər 10 dəqiqədən bir `SERVER ÜNVANIN/health` ünvanını çağıran iş qur.
@@ -83,10 +83,7 @@ Cədvəlləri özün yaratmağa ehtiyac yoxdur — server ilk açılışda onlar
    - **App name:** Gündəm · **User support email:** öz e-poçtun
    - **Audience:** **External**
    - **Contact information:** öz e-poçtun → *Create*
-4. **Branding** bölməsi:
-   - App home page: `SERVER ÜNVANIN`
-   - Privacy policy: `SERVER ÜNVANIN/privacy.html`
-   - Authorized domains: `onrender.com` → *Save*
+4. **Branding** bölməsi: yalnız App name, support email və developer contact doldur. Home page, privacy policy və **Authorized domains** boş qalsın — test rejimində lazım deyil (`onrender.com` paylaşılan domen olduğu üçün Google onu qəbul etmir) → *Save*
 5. **Audience** bölməsi:
    - Publishing status **Testing** qalsın. **Publish** basma — bunu etsən, Google yoxlaması tələb olunacaq.
    - **Test users → Add users**: özünün və testerlərin **Gmail ünvanlarını** əlavə et (100 nəfərə qədər).
@@ -97,7 +94,7 @@ Cədvəlləri özün yaratmağa ehtiyac yoxdur — server ilk açılışda onlar
 7. **Clients → Create client**:
    - Application type: **Web application** · Name: `Gundem web`
    - **Authorized redirect URIs → Add URI:** `SERVER ÜNVANIN/auth/google/callback`
-     (məs. `https://gundem-ab12.onrender.com/auth/google/callback` — sonunda `/` olmasın)
+     (məs. `https://gundem-sesi.onrender.com/auth/google/callback` — sonunda `/` olmasın)
    - *Create* → **Client ID** və **Client secret** kopyala.
 8. **Render → gundem servisi → Environment**:
    - `GOOGLE_CLIENT_ID` və `GOOGLE_CLIENT_SECRET` dəyərlərini dəyiş → **Save, rebuild and deploy**.
@@ -120,7 +117,7 @@ Mac-də Terminal:
 ```bash
 cd ~/Downloads/gundem-saas/ios
 npm install
-npm run build:web -- --api https://gundem-ab12.onrender.com     # ← SƏNİN SERVER ÜNVANIN
+npm run build:web -- --api https://gundem-sesi.onrender.com     # ← SƏNİN SERVER ÜNVANIN
 npx cap sync ios
 npx cap open ios
 ```

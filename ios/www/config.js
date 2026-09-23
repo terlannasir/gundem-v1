@@ -1,1 +1,1 @@
-window.GUNDEM_CONFIG = {"api":"https://SENIN-SERVERIN.onrender.com"};
+window.GUNDEM_CONFIG = {"api":"https://gundem-sesi.onrender.com"};
