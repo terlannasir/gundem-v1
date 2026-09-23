@@ -129,7 +129,7 @@ Xcode-da:
 
 1. **App → Signing & Capabilities → Team:** öz hesabın.
    - Bundle ID `az.gundem.app`. Əvvəlki build-i bu ID ilə yükləmisənsə, eyni qalsın.
-2. Build nömrəsi artıq **2**-dir. Hər yeni yükləmədə **General → Build** sahəsini 1 artır.
+2. Build nömrəsi artıq **3**-dür. Yeni build yalnız native hissə dəyişəndə lazımdır — onda **General → Build** sahəsini 1 artır.
 3. Yuxarıda cihaz olaraq **Any iOS Device (arm64)** seç → **Product → Archive**.
 4. **Distribute App → App Store Connect → Upload**.
 5. 10–30 dəqiqə sonra App Store Connect → **TestFlight**-da görünəcək. **Internal Testing** qrupuna testerləri əlavə et (Apple yoxlaması yoxdur).
@@ -178,16 +178,14 @@ Xərci azaltmaq üçün:
 
 ## Nə yoxlanılıb
 
-- **Server testləri — 54/54:** real PostgreSQL üzərində. Google API-ləri və Gemini/Claude cavabları saxta (mock) idi. Əhatə edir:
-  - bütün Gmail/Təqvim/Drive alətləri: cavab, hamıya cavab, yönləndirmə, UTF-8 başlıqlar, PDF/Word/Excel oxuma;
-  - AI alət çağırışları və limitlər;
-  - hesab silmə, iOS kod mübadiləsi.
-- **Brauzer testi — 25/25:** real server və real Gündəm interfeysi Chromium-da işlədildi. Əhatə edir:
-  - giriş ekranı, poçt, məktub açma, oxunmuş etmə, cavab göndərmə;
-  - brifinq, sənədlər, alət çağıran söhbət;
-  - ayarlar, çıxış;
-  - iOS deep-link girişinin simulyasiyası.
-- **Yoxlanmayıb:**
-  - real Google hesabı və real Gemini açarı ilə iş (bunlar sənin açarlarınla ilk dəfə 6-cı addımda işləyəcək);
-  - Xcode build və real iPhone.
-- Xəta çıxsa: Render → **Logs**-dan son sətirləri, Xcode-dan xəta mətnini göndər.
+- **Server testləri — 61/61** (Gemini) və **59/59** (Claude): real PostgreSQL üzərində, Google API-ləri və AI cavabları saxta (mock). Əhatə edir: bütün Gmail/Təqvim/Drive alətləri (cavab, hamıya cavab, yönləndirmə, UTF-8 və vergüllü adlar, PDF/Word/Excel oxuma), PKCE ilə giriş, AI alət çağırışları və limitlər (limitdən yan keçmə cəhdi daxil), bütün cihazlardan çıxış, hesab silmə.
+- **Brauzer testi — 35/35**: real server və real interfeys Chromium-da. Əhatə edir: saxta giriş linklərinin rədd edilməsi, veb və iOS girişi (PKCE), poçt, cavab göndərmə, brifinq, sənədlər, alət çağıran söhbət, ayarlar, Face ID kilidi, çıxış.
+- **İnterfeys testləri** (əvvəlki 3 dəst): 0 xəta.
+- **Yoxlanmayıb:** real iPhone-da Face ID və Google girişi (TestFlight build-dən sonra).
+
+## Təhlükəsizlik qeydləri
+
+- Giriş PKCE ilə qorunur: token heç vaxt URL-də görünmür, başqasının göndərdiyi giriş linki və ya kodu işləmir.
+- Hesab silinəndə Google icazəsi də ləğv olunur.
+- Serverdə `POST /api/signout-all` bütün cihazlardakı sessiyaları bağlayır.
+- Supabase bağlantısı şifrəlidir, amma sertifikat yoxlanmır (`rejectUnauthorized: false`) — ictimai buraxılışdan əvvəl Supabase CA sertifikatını əlavə etmək tövsiyə olunur.

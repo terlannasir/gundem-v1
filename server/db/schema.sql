@@ -50,3 +50,9 @@ create table if not exists login_codes (
 );
 
 create index if not exists login_codes_exp on login_codes(expires_at);
+
+-- PKCE: the login code is bound to the device/tab that started the login (sha256 of its secret verifier)
+alter table login_codes add column if not exists challenge text;
+-- JWT revocation: bumping token_version logs out every device of the user
+alter table users add column if not exists token_version int not null default 0;
+delete from login_codes where expires_at < now();

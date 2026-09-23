@@ -54,7 +54,10 @@ const msgMeta = (m) => ({
 const encWord = (s) => (/^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${Buffer.from(s, "utf8").toString("base64")}?=`);
 function encAddr(a) {
   const m = String(a).match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
-  return m && m[1] ? `${encWord(m[1])} <${m[2]}>` : String(a).trim();
+  if (!m || !m[1]) return String(a).trim();
+  const n = m[1].trim();
+  const name = !/^[\x20-\x7e]*$/.test(n) ? encWord(n) : /[()<>@,;:\\".[\]]/.test(n) ? `"${n.replace(/["\\]/g, "\\$&")}"` : n;   // "Doe, John" stays one recipient
+  return `${name} <${m[2]}>`;
 }
 const noCRLF = (s) => String(s || "").replace(/[\r\n]+/g, " ");
 function mime({ to, cc, bcc, subject, body, inReplyTo, references, extraParts }) {
@@ -157,10 +160,11 @@ const gmailTools = {
 };
 
 /* ================= Calendar ================= */
+const isoOr400 = (v, name) => { if (!v) return undefined; const d = new Date(v); if (isNaN(d)) throw badInput(`${name} is not a valid date`); return d.toISOString(); };
 const calendarTools = {
   async list_events(auth, i) {
     const cal = google.calendar({ version: "v3", auth });
-    const { data } = await cal.events.list({ calendarId: i.calendarId || "primary", timeMin: i.startTime ? new Date(i.startTime).toISOString() : undefined, timeMax: i.endTime ? new Date(i.endTime).toISOString() : undefined,
+    const { data } = await cal.events.list({ calendarId: i.calendarId || "primary", timeMin: isoOr400(i.startTime, "startTime"), timeMax: isoOr400(i.endTime, "endTime"),
       singleEvents: true, orderBy: "startTime", maxResults: Math.min(250, Number(i.pageSize) || 50), timeZone: i.timeZone || undefined, q: i.query || undefined, pageToken: i.pageToken || undefined });
     return { events: data.items || [], ...(data.nextPageToken ? { nextPageToken: data.nextPageToken } : {}) };
   },
@@ -208,6 +212,7 @@ async function xlsxText(buf) {
     return `## ${ws.name}\n${rows.join("\n")}`;
   }).join("\n\n");
 }
+const timeBox = (p, ms = 20000) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(toolErr("Faylı oxumaq çox uzun çəkdi")), ms))]);
 const driveTools = {
   async search_files(auth, i) {
     const drive = google.drive({ version: "v3", auth });
@@ -221,15 +226,17 @@ const driveTools = {
     const id = str(i.fileId, "fileId", 200);
     const { data: f } = await drive.files.get({ fileId: id, fields: "id,name,mimeType,size", supportsAllDrives: true });
     const exp = async (mimeType) => Buffer.from((await drive.files.export({ fileId: id, mimeType }, { responseType: "arraybuffer" })).data).toString("utf8");
-    const mt = f.mimeType || "";
-    if (Number(f.size || 0) > 25 * 1024 * 1024) throw toolErr("Fayl oxumaq üçün çox böyükdür (25 MB-dan çox)");
+    const mt = f.mimeType || "", size = Number(f.size || 0);
+    // untrusted files are parsed in-process on a 512 MB instance → keep them small and time-boxed
+    const office = /wordprocessingml|spreadsheetml/.test(mt);
+    if (size > (office ? 8 : 20) * 1024 * 1024) throw toolErr(`Fayl oxumaq üçün çox böyükdür (${office ? 8 : 20} MB-dan çox)`);
     let text;
     if (mt === "application/vnd.google-apps.document") text = await exp("text/markdown").catch(() => exp("text/plain"));
     else if (mt === "application/vnd.google-apps.spreadsheet") text = await exp("text/csv");
     else if (mt === "application/vnd.google-apps.presentation" || mt === "application/vnd.google-apps.drawing") text = await exp("text/plain");
-    else if (mt === "application/pdf") text = await pdfText(await download(drive, id));
-    else if (/wordprocessingml/.test(mt)) text = (await mammoth.extractRawText({ buffer: await download(drive, id) })).value;
-    else if (/spreadsheetml/.test(mt)) text = await xlsxText(await download(drive, id));
+    else if (mt === "application/pdf") text = await timeBox(pdfText(await download(drive, id)));
+    else if (/wordprocessingml/.test(mt)) text = (await timeBox(mammoth.extractRawText({ buffer: await download(drive, id) }))).value;
+    else if (/spreadsheetml/.test(mt)) text = await timeBox(xlsxText(await download(drive, id)));
     else if (/^text\/|json|xml|csv|markdown/.test(mt)) text = (await download(drive, id)).toString("utf8");
     else throw toolErr(`Bu fayl növü oxuna bilmir: ${mt}`);
     return { id, title: f.name, mimeType: mt, fileContent: text.slice(0, 400000) };

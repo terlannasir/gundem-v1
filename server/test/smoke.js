@@ -84,7 +84,10 @@ ok((await app.inject("/health")).json().ok, "health");
 let r = await app.inject("/");
 ok(r.statusCode === 200 && r.body.includes("runtime.js") && (PROVIDER === "gemini" ? r.body.includes("Gemini ilə") && !/\bClaude-a\b/.test(r.body) : r.body.includes("Claude")), `web app served with ${PROVIDER} branding`);
 ok((await app.inject("/privacy.html")).statusCode === 200 && (await app.inject("/runtime.js")).statusCode === 200, "privacy + runtime served");
-const start = await app.inject("/auth/google/start?app=1");
+const { createHash } = await import("node:crypto");
+const VER = "v".repeat(43), CC = createHash("sha256").update(VER).digest("base64url");
+ok((await app.inject("/auth/google/start?app=1")).statusCode === 400, "start without PKCE challenge rejected");
+const start = await app.inject("/auth/google/start?app=1&cc=" + CC);
 const loc = decodeURIComponent(start.headers.location || "");
 ok(start.statusCode === 302 && /gmail\.modify/.test(loc) && /auth\/drive(\s|&|$)/.test(loc) && /access_type=offline/.test(loc), "oauth start: gmail.modify + full drive + offline");
 ok((await app.inject("/auth/google/callback?state=garbage&code=x")).statusCode === 400, "callback rejects bad state");
@@ -133,6 +136,10 @@ ok(/Subject: Fwd: Hesabat/.test(raw) && /message\/rfc822/.test(raw) && raw.inclu
 r = await tool("Gmail", "send_message", { to: ["Əli Məmmədov <ali@x.az>"], subject: "Salam dünya", body: "Mətn ə" });
 raw = Buffer.from(sent.at(-1).raw, "base64url").toString();
 ok(/^To: =\?UTF-8\?B\?.+\?= <ali@x\.az>/m.test(raw) && /Subject: =\?UTF-8\?B\?/.test(raw) && Buffer.from(raw.split("\r\n\r\n").pop().replace(/\r\n/g, ""), "base64").toString() === "Mətn ə", "send_message: UTF-8 headers + body");
+r = await tool("Gmail", "send_message", { to: ['"Doe, John" <j@x.az>'], subject: "s", body: "b" });
+ok(/^To: "Doe, John" <j@x\.az>/m.test(Buffer.from(sent.at(-1).raw, "base64url").toString()), "display name with comma stays one recipient");
+r = await tool("Google Calendar", "list_events", { startTime: "nonsense" });
+ok(r.statusCode === 400 && r.json().error === "bad_request", "invalid date → 400 not 500");
 r = await tool("Gmail", "send_message", { to: [], body: "x" });
 ok(r.statusCode === 400 && r.json().error === "bad_request", "send without recipient → bad_request");
 r = await tool("Gmail", "create_draft", { to: ["a@x.az"], subject: "Re: Hesabat", body: "qaralama", replyToMessageId: "m1" });
@@ -172,11 +179,12 @@ if (PROVIDER === "gemini") ok(aiCalls.at(-1).body.generationConfig.responseMimeT
 else ok(aiCalls.at(-1).body.system[0].cache_control?.type === "ephemeral" && aiCalls.at(-1).body.model === "claude-sonnet-5", "anthropic: prompt caching, smart model");
 const tools = [{ name: "search_mail", description: "Poçtda axtar", inputSchema: { type: "object", properties: { query: { type: "string" } } } }];
 const convo = [{ role: "user", content: [{ type: "text", text: "Hesabat məktubu hardadır?" }, { type: "image", mediaType: "image/png", data: "iVBORw0KGgo=" }] }];
-r = await sampleReq({ messages: convo, tools, modelTier: "quick", round: 0 });
+ok((await sampleReq({ messages: convo, tools, turn: "fake" })).statusCode === 400, "follow-up round without a server-issued turn is rejected (no quota bypass)");
+r = await sampleReq({ messages: convo, tools, modelTier: "quick" });
 const t1 = r.json();
 ok(t1.stop === "tool_use" && t1.calls[0].name === "search_mail" && t1.calls[0].input.query === "hesabat", "sample: tool call returned to the page");
 if (PROVIDER === "gemini") ok(aiCalls.at(-1).body.generationConfig.thinkingConfig?.thinkingLevel === "minimal" && aiCalls.at(-1).url.includes("flash-lite") && aiCalls.at(-1).body.contents[0].parts[1].inlineData.mimeType === "image/png", "gemini: quick tier → lite model, image inline");
-r = await sampleReq({ messages: [...convo, { role: "assistant", raw: t1.raw }, { role: "user", toolResults: [{ id: t1.calls[0].id, name: "search_mail", output: "2 məktub tapıldı" }] }], tools, round: 1 });
+r = await sampleReq({ messages: [...convo, { role: "assistant", raw: t1.raw }, { role: "user", toolResults: [{ id: t1.calls[0].id, name: "search_mail", output: "2 məktub tapıldı" }] }], tools, turn: t1.turn });
 ok(r.json().stop === "end" && r.json().text === "Hazırdır: 2 məktub tapıldı", "sample: tool result round → final answer");
 if (PROVIDER === "gemini") { const c = aiCalls.at(-1).body.contents; ok(c[1].parts[0].thoughtSignature === "sig123" && c[2].parts[0].functionResponse.id === "fc1", "gemini: thought signature + call id echoed back"); }
 ok((await sampleReq({ messages: [{ role: "system", content: "x" }] })).statusCode === 400, "sample validates roles");
@@ -196,13 +204,19 @@ await app.inject({ method: "POST", url: "/webhooks/revenuecat", headers: { autho
 ok((await app.inject({ url: "/api/me", headers: H })).json().plan === "free", "expiration → free");
 
 // mobile code exchange
-await q("insert into login_codes (code,user_id,expires_at) values ('c1',$1, now()+interval '1 minute')", [u.id]);
-r = await app.inject({ method: "POST", url: "/auth/exchange", payload: { code: "c1" } });
+await q("insert into login_codes (code,user_id,expires_at,challenge) values ('c1',$1, now()+interval '1 minute',$2)", [u.id, CC]);
+ok((await app.inject({ method: "POST", url: "/auth/exchange", payload: { code: "c1", verifier: "w".repeat(43) } })).statusCode === 400, "code exchange with wrong PKCE verifier rejected");
+await q("insert into login_codes (code,user_id,expires_at,challenge) values ('c1',$1, now()+interval '1 minute',$2)", [u.id, CC]);
+r = await app.inject({ method: "POST", url: "/auth/exchange", payload: { code: "c1", verifier: VER } });
 ok(r.statusCode === 200 && r.json().token, "code exchange");
-ok((await app.inject({ method: "POST", url: "/auth/exchange", payload: { code: "c1" } })).statusCode === 400, "code single-use");
+ok((await app.inject({ method: "POST", url: "/auth/exchange", payload: { code: "c1", verifier: VER } })).statusCode === 400, "code single-use");
+const T2 = r.json().token; ok((await app.inject({ url: "/api/me", headers: { authorization: "Bearer " + T2 } })).statusCode === 200, "exchanged token works");
+await app.inject({ method: "POST", url: "/api/signout-all", headers: { authorization: "Bearer " + T2 } });
+ok((await app.inject({ url: "/api/me", headers: { authorization: "Bearer " + T2 } })).statusCode === 401, "signout-all revokes issued tokens");
+const H3 = { authorization: "Bearer " + await issueToken(u.id) };
 
-ok((await app.inject({ method: "DELETE", url: "/api/me", headers: H })).json().ok, "account delete");
-ok((await app.inject({ url: "/api/me", headers: H })).statusCode === 401, "deleted user cannot auth");
+ok((await app.inject({ method: "DELETE", url: "/api/me", headers: H3 })).json().ok, "account delete");
+ok((await app.inject({ url: "/api/me", headers: H3 })).statusCode === 401, "deleted user cannot auth");
 ok(!(await one("select 1 from google_tokens where user_id=$1", [u.id])), "google token deleted with account");
 console.log(`\n${pass} passed (${PROVIDER})`);
 await app.close(); await pool.end();

@@ -1,10 +1,13 @@
 import { requireUser } from "../auth.js";
 import { q, one } from "../db.js";
 import { config } from "../config.js";
-import { clientFor, forgetClient } from "../google.js";
+import { clientFor, forgetClient, oauthClient } from "../google.js";
+import { decrypt } from "../crypto.js";
 import { SERVERS, runTool } from "../tools.js";
 import { usage, limitsFor, sampleRequest } from "../ai.js";
 
+const TOOL_CODES = new Set(["needs_reauth", "tool_error", "bad_request", "server_unavailable", "not_in_manifest"]);
+const AI_CODES = new Set(["rate_limited", "upstream_error", "bad_request", "blocked"]);
 const STATE_KEYS = ["profile", "settings", "tasks", "docs", "aicat", "brief"];
 
 export default async function apiRoutes(app) {
@@ -19,9 +22,14 @@ export default async function apiRoutes(app) {
   });
   app.delete("/me", async (req) => {   // App Store account-deletion requirement (5.1.1(v))
     const row = await one("select refresh_token from google_tokens where user_id=$1", [req.user.id]);
-    if (row) { try { const c = await clientFor(req.user.id); await c.revokeCredentials(); } catch {} }
+    if (row) { try { await oauthClient().revokeToken(decrypt(row.refresh_token)); } catch (e) { req.log.warn({ err: e.message }, "google revoke failed"); } }
     forgetClient(req.user.id);
     await q("delete from users where id=$1", [req.user.id]);
+    return { ok: true };
+  });
+
+  app.post("/signout-all", async (req) => {   // invalidates every issued token of this user (all devices)
+    await q("update users set token_version = token_version + 1 where id=$1", [req.user.id]);
     return { ok: true };
   });
 
@@ -49,8 +57,8 @@ export default async function apiRoutes(app) {
       return { payload };
     } catch (e) {
       if (e.code === "needs_reauth") forgetClient(req.user.id);
-      if (e.code) return reply.code(e.status || 500).send({ error: e.code, message: e.message, server, ...(e.retryable ? { retryable: true } : {}) });
-      throw e;
+      if (TOOL_CODES.has(e.code)) return reply.code(e.status || 500).send({ error: e.code, message: e.message, server, ...(e.retryable ? { retryable: true } : {}) });
+      throw e;   // anything else (DB, bugs) → generic 500 without internals
     }
   });
 
@@ -59,8 +67,7 @@ export default async function apiRoutes(app) {
     try { return await sampleRequest(req.user, req.body || {}, req.log); }
     catch (e) {
       if (e.status === 402) throw e;
-      if (e.code && e.status && e.status < 500) return reply.code(e.status).send({ error: e.code, message: e.message });
-      if (e.code) return reply.code(502).send({ error: e.code, message: e.message });
+      if (AI_CODES.has(e.code)) return reply.code(e.status && e.status < 500 ? e.status : 502).send({ error: e.code, message: e.message });
       throw e;
     }
   });

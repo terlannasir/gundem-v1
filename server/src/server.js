@@ -14,8 +14,8 @@ import billingRoutes from "./routes/billing.js";
 export function build() {
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL || "info", redact: ["req.headers.authorization"] }, bodyLimit: 2 * 1024 * 1024, trustProxy: true });
   app.register(cors, { origin: [config.webOrigin, config.publicUrl, "capacitor://localhost", "http://localhost", "https://localhost"], credentials: false });
-  app.register(rateLimit, { max: 240, timeWindow: "1 minute", keyGenerator: (req) => req.headers.authorization?.slice(-24) || req.ip });
-  app.addHook("onSend", async (req, reply) => { reply.header("x-content-type-options", "nosniff"); reply.header("referrer-policy", "no-referrer"); });
+  app.register(rateLimit, { max: 240, timeWindow: "1 minute", keyGenerator: (req) => (req.headers["cf-connecting-ip"] || req.ip) + ":" + (req.headers.authorization?.slice(-16) || "") });
+  app.addHook("onSend", async (req, reply) => { reply.header("x-content-type-options", "nosniff"); reply.header("referrer-policy", "no-referrer"); reply.header("x-frame-options", "DENY"); });
   app.get("/health", async () => ({ ok: true }));
   app.register(authRoutes);
   app.register(billingRoutes);

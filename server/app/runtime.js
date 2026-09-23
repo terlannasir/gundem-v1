@@ -23,15 +23,36 @@
     return plugins[name];
   }
 
-  /* ---------------- token from the OAuth redirect (web) ---------------- */
-  var authError = null;
+  /* ---------------- login code from the OAuth redirect (web) ---------------- */
+  // PKCE: the tab that starts the login keeps a secret verifier; the server only hands out a token for
+  // code + verifier, so a login link/code injected by someone else is useless (no login CSRF, no code theft).
+  var PK = "gundem.pkce", authError = null, pendingCode = null;
+  var ss = { get: function (k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }, set: function (k, v) { try { sessionStorage.setItem(k, v); } catch (e) {} }, del: function (k) { try { sessionStorage.removeItem(k); } catch (e) {} } };
   (function () {
     var h = location.hash || "";
-    var t = h.match(/[#&]token=([^&]+)/), e = h.match(/[#&]auth_error=([^&]+)/);
-    if (t) ls.set(TK, decodeURIComponent(t[1]));
+    var c = h.match(/[#&]code=([^&]+)/), e = h.match(/[#&](?:auth_)?error=([^&]+)/), old = /[#&]token=/.test(h);
+    if (c) pendingCode = decodeURIComponent(c[1]);
     if (e) authError = decodeURIComponent(e[1]);
-    if (t || e) history.replaceState(null, "", location.pathname + location.search);
+    if (c || e || old) history.replaceState(null, "", location.pathname + location.search);   // never accept a token from the URL
   })();
+  function b64url(bytes) { var s = ""; for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+  async function newPkce() {
+    var v = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    var cc = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(v))));
+    return { v: v, cc: cc };
+  }
+  function subOf(t) { try { return JSON.parse(atob(t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub || ""; } catch (e) { return ""; } }
+  function setToken(t) {   // a different account on this device → drop the previous account's local copies
+    var prev = ls.get("gundem.auth.uid"), sub = subOf(t);
+    if (prev && sub && prev !== sub) ls.keys().forEach(function (k) { if (k.indexOf("gundem.") === 0) ls.del(k); });
+    ls.set(TK, t); ls.set("gundem.auth.uid", sub);
+  }
+  async function exchange(code, verifier) {
+    var r = await fetch(BASE + "/auth/exchange", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: code, verifier: verifier }) });
+    var d = await r.json().catch(function () { return {}; });
+    if (!r.ok || !d.token) throw new Error(d.error || "exchange");
+    return d.token;
+  }
 
   var token = ls.get(TK), me = null, authResolve, reauthShown = false;
   var authed = new Promise(function (r) { authResolve = r; });
@@ -74,7 +95,7 @@
     "#gd-login button svg{width:20px;height:20px}#gd-login .n{margin-top:16px;font-size:13px;color:#8FC2BB;line-height:1.5}#gd-login .n a{color:#CDEFEA}#gd-login .e{margin-top:14px;padding:10px 12px;border-radius:12px;background:rgba(244,63,94,.18);color:#FFE4E6;font-size:14px}";
   var LOGO = '<svg viewBox="0 0 24 24" fill="none" stroke="#EFFAF8" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
   var GLOGO = '<svg viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>';
-  var ERRS = { access_denied: "Google girişi ləğv edildi.", invalid_code: "Giriş kodu etibarsızdır — yenidən cəhd et." };
+  var ERRS = { access_denied: "Google girişi ləğv edildi.", invalid_code: "Giriş kodu etibarsızdır və ya vaxtı keçib — yenidən cəhd et.", not_started: "Giriş bu pəncərədə başlanmayıb — yenidən «Google ilə daxil ol» bas." };
   function showLogin(msg) {
     var box = document.getElementById("gd-login");
     if (!box) {
@@ -92,13 +113,16 @@
   function hideLogin() { var b = document.getElementById("gd-login"); if (b) b.style.display = "none"; }
   function busy(on, label) { var b = document.getElementById("gd-go"); if (!b) return; b.disabled = on; b.lastChild.textContent = label || "Google ilə daxil ol"; }
 
-  var retryMode = false;
+  var retryMode = false, nativeVerifier = null;
   async function startLogin() {
     if (retryMode) { retryMode = false; busy(true, "Qoşulur…"); return boot(); }
-    if (!NATIVE) { busy(true, "Google açılır…"); location.href = API + "/auth/google/start"; return; }
-    var Browser = plugin("Browser");
     busy(true, "Google açılır…");
-    try { await Browser.open({ url: BASE + "/auth/google/start?app=1", presentationStyle: "popover" }); }
+    var pk; try { pk = await newPkce(); } catch (e) { busy(false); showLogin("Bu brauzer təhlükəsiz girişi dəstəkləmir."); return; }
+    ss.set(PK, pk.v);
+    if (!NATIVE) { location.href = BASE + "/auth/google/start?cc=" + pk.cc; return; }
+    nativeVerifier = pk.v;
+    var Browser = plugin("Browser");
+    try { await Browser.open({ url: BASE + "/auth/google/start?app=1&cc=" + pk.cc, presentationStyle: "popover" }); }
     catch (e) { busy(false); showLogin("Brauzer açılmadı: " + (e && e.message || e)); }
     setTimeout(function () { busy(false); }, 4000);
   }
@@ -107,20 +131,24 @@
     if (App) App.addListener("appUrlOpen", async function (ev) {
       var u; try { u = new URL(ev.url); } catch (e) { return; }
       if (u.host !== "auth" && u.pathname.replace(/^\/+/, "") !== "auth") return;
+      var verifier = nativeVerifier || ss.get(PK);
+      if (!verifier) return;                        // no login started here → ignore foreign/replayed links
       try { plugin("Browser").close(); } catch (e) {}
       var code = u.searchParams.get("code"), e2 = u.searchParams.get("error");
+      nativeVerifier = null; ss.del(PK);
       if (e2 || !code) { if (token && me) return; showLogin(ERRS[e2] || "Giriş alınmadı: " + e2); busy(false); return; }
       busy(true, "Daxil olunur…");
-      try {
-        var r = await fetch(API + "/auth/exchange", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: code }) });
-        var d = await r.json();
-        if (!r.ok || !d.token) throw new Error(d.error || "exchange");
-        token = d.token; ls.set(TK, token); await boot();
-      } catch (e) { busy(false); showLogin(ERRS[e.message] || "Giriş alınmadı — yenidən cəhd et."); }
+      try { setToken(await exchange(code, verifier)); location.reload(); }   // fresh page = clean state for the new session
+      catch (e) { busy(false); showLogin(ERRS[e.message] || "Giriş alınmadı — yenidən cəhd et."); }
     });
   }
 
   async function boot() {
+    if (pendingCode) {                               // back from Google in this tab
+      var v = ss.get(PK), c = pendingCode; pendingCode = null; ss.del(PK);
+      if (!v) authError = "not_started";
+      else { try { token = await exchange(c, v); var before = ls.get("gundem.auth.uid"); setToken(token); clearCaches(); if (before && before !== subOf(token)) { location.reload(); return; } } catch (e) { authError = e.message; } }
+    }
     if (!token) { showLogin(authError ? (ERRS[authError] || "Giriş alınmadı: " + authError) : ""); return; }
     var slow = setTimeout(function () { showLogin(""); busy(true, "Server oyanır… (30–60 san.)"); }, 3500);
     try {
@@ -172,12 +200,20 @@
 
   /* ---------------- Face ID / Touch ID lock (iOS app) ---------------- */
   var LOCK = "gundem.lock", GRACE = 60000;
-  var bio = { ok: false, name: "Face ID" }, locked = false, prompting = false, bgAt = 0;
+  var bio = { ok: false, name: "Face ID" }, locked = false, prompting = false, bgAt = 0, promptEndedAt = 0;
   var lockOn = function () { return ls.get(LOCK) === "1"; };
+  // lock on → hide everything from the very first paint until Face ID says otherwise
+  function veil(on) {
+    var v = document.getElementById("gd-veil");
+    if (on && !v) { v = document.createElement("style"); v.id = "gd-veil"; v.textContent = "body>*:not(#gd-lock):not(#gd-login){visibility:hidden!important}"; document.head.appendChild(v); }
+    if (!on && v) v.remove();
+  }
+  if (NATIVE && lockOn()) veil(true);
   var LOCK_CSS = "#gd-lock{position:fixed;inset:0;z-index:2147483600;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;background:linear-gradient(160deg,#0A2427,#0C5B55);color:#EFFAF8;font-family:Onest,-apple-system,system-ui,sans-serif;text-align:center}" +
     "#gd-lock h2{margin:8px 0 0;font:600 24px Unbounded,Onest,system-ui,sans-serif}#gd-lock p{margin:0;color:#A9D4CE;font-size:15px}#gd-lock button{margin-top:18px;border:0;border-radius:14px;padding:14px 26px;font:700 16px inherit;font-family:inherit;background:#EFFAF8;color:#0A2427}";
   function lockOverlay(show, msg) {
     var el = document.getElementById("gd-lock");
+    veil(!!show);
     if (!show) { if (el) el.remove(); return; }
     if (!el) {
       if (!document.getElementById("gd-lock-css")) { var st = document.createElement("style"); st.id = "gd-lock-css"; st.textContent = LOCK_CSS; document.head.appendChild(st); }
@@ -197,7 +233,7 @@
       await B.verifyIdentity({ reason: "Gündəmi açmaq üçün", title: "Gündəm", useFallback: true });
       locked = false; lockOverlay(false);
     } catch (e) { lockOverlay(true, "Təsdiq alınmadı — yenidən cəhd et."); }
-    finally { prompting = false; bgAt = 0; }
+    finally { prompting = false; bgAt = 0; promptEndedAt = Date.now(); }
   }
   function lockNow(prompt) { locked = true; lockOverlay(true); if (prompt) setTimeout(unlock, 250); }
   async function initLock() {
@@ -206,14 +242,16 @@
     try {
       var r = B && await B.isAvailable({ useFallback: true });
       bio.ok = !!(r && r.isAvailable); bio.name = r && r.biometryType === 1 ? "Touch ID" : r && r.biometryType === 2 ? "Face ID" : "Kod";
-    } catch (e) { bio.ok = false; }                 // older build without the plugin → no lock option
+    } catch (e) { bio.ok = false; veil(false); }    // older build without the plugin → no lock option
     renderLockRow();
     if (bio.ok && lockOn()) lockNow(true);
     var App = plugin("App");
     if (App) App.addListener("appStateChange", function (st) {
-      if (prompting || !bio.ok || !lockOn()) return;  // the Face ID sheet itself makes the app inactive
+      // the Face ID sheet itself makes the app inactive/active — ignore those transitions (else: endless prompt loop after "Cancel")
+      if (prompting || !bio.ok || !lockOn() || Date.now() - promptEndedAt < 1500) return;
       if (!st.isActive) { bgAt = Date.now(); if (!locked) lockOverlay(true); }   // hide content in the app switcher
-      else if (locked || (bgAt && Date.now() - bgAt > GRACE)) lockNow(true);
+      else if (bgAt && Date.now() - bgAt > GRACE) lockNow(true);
+      else if (locked) lockOverlay(true);            // still locked (e.g. cancelled) → wait for the button, don't re-prompt
       else { lockOverlay(false); bgAt = 0; }
     });
   }
@@ -227,7 +265,7 @@
       var B = plugin("NativeBiometric"); prompting = true;
       try { await B.verifyIdentity({ reason: bio.name + " kilidini aktivləşdirmək üçün", title: "Gündəm", useFallback: true }); ls.set(LOCK, "1"); }
       catch (e) { t.checked = false; }
-      finally { prompting = false; }
+      finally { prompting = false; promptEndedAt = Date.now(); }
     });
   }
   window.GundemLock = { lockNow: lockNow, state: function () { return { available: bio.ok, on: lockOn(), locked: locked }; } };
@@ -318,9 +356,11 @@
     tools.forEach(function (t) { byName[t.name] = t; });
     var defs = tools.map(function (t) { return { name: t.name, description: t.description || "", inputSchema: t.inputSchema || { type: "object", properties: {} } }; });
     var text = "";
+    var turn = null;
     for (var round = 0; round < 10; round++) {
       if (opts.signal && opts.signal.aborted) throw err("cancelled", "Ləğv edildi");
-      var r = await api("/api/ai/sample", { body: { messages: msgs, tools: defs.length ? defs : undefined, modelTier: opts.modelTier, json: !!opts.json, round: round }, signal: opts.signal });
+      var r = await api("/api/ai/sample", { body: { messages: msgs, tools: defs.length ? defs : undefined, modelTier: opts.modelTier, json: !!opts.json, turn: turn || undefined }, signal: opts.signal });
+      if (r.turn) turn = r.turn;
       if (r.text) { text += (text ? "\n\n" : "") + r.text; if (opts.onText) try { opts.onText({ text: text, delta: r.text }); } catch (e) {} }
       if (r.stop !== "tool_use") return { text: text, truncated: !!r.truncated };
       msgs.push({ role: "assistant", raw: r.raw });

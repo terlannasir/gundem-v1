@@ -98,12 +98,25 @@ try {
   await p.waitForSelector("#gd-login button", { timeout: 8000 });
   ok(await p.isVisible("text=Google ilə daxil ol"), "no token → login screen");
   await p.screenshot({ path: SHOTS + "/1-login.png" });
-  const [req] = await Promise.all([p.waitForRequest(/\/auth\/google\/start/), p.click("#gd-go")]);
-  ok(!req.url().includes("app=1"), "web login goes to /auth/google/start");
+  // forged links must not log anyone in
+  const f = await page({ width: 800, height: 600 });
+  await f.goto("http://localhost:8099/#token=" + token); await f.waitForSelector("#gd-login button");
+  ok(!(await f.evaluate(() => localStorage.getItem("gundem.auth.token"))) && !(await f.evaluate(() => /token/.test(location.hash))), "forged #token= link is ignored and removed (no login CSRF)");
+  await q("insert into login_codes (code,user_id,expires_at,challenge) values ('stolen',$1, now()+interval '1 minute','x')", [u.id]);
+  await f.goto("about:blank"); await f.goto("http://localhost:8099/#code=stolen"); await f.waitForSelector("#gd-login button"); await f.waitForTimeout(300);
+  ok(!(await f.evaluate(() => localStorage.getItem("gundem.auth.token"))) && /başlanmayıb/.test(await f.textContent("#gd-msg")), "code without this tab's PKCE verifier is rejected");
+  await f.close();
 
-  await p.goto("http://localhost:8099/#token=" + token);
-  await p.waitForFunction(() => !location.hash.includes("token"), null, { timeout: 5000 });
-  ok(true, "token removed from URL");
+  // real web login: Google is simulated — /auth/google/start (tested in smoke) is intercepted, a code bound to the page's challenge is issued
+  let webCC = null;
+  await p.route(/\/auth\/google\/start/, async (r) => {
+    webCC = new URL(r.request().url()).searchParams.get("cc");
+    await q("insert into login_codes (code,user_id,expires_at,challenge) values ('webcode',$1, now()+interval '1 minute',$2)", [u.id, webCC]);
+    await r.fulfill({ status: 302, headers: { location: "http://localhost:8099/#code=webcode" } });
+  });
+  await p.click("#gd-go");
+  await p.waitForFunction(() => !!localStorage.getItem("gundem.auth.token") && !/code=/.test(location.hash), null, { timeout: 10000 });
+  ok(/^[A-Za-z0-9_-]{43}$/.test(webCC || ""), "web login: PKCE challenge sent, code exchanged for a session, URL cleaned");
   await p.waitForFunction(() => document.querySelectorAll("#mail-list .mrow, #mail-list [data-id]").length >= 1, null, { timeout: 15000 });
   ok(!(await p.isVisible("#gd-login")), "login hidden after sign-in");
   ok(await p.evaluate(() => document.getElementById("onb").hidden), "onboarding skipped (profile synced from server)");
@@ -160,7 +173,8 @@ try {
 
   // mobile
   const m = await page({ width: 390, height: 844 });
-  await m.goto("http://localhost:8099/#token=" + token);
+  await m.addInitScript((t) => localStorage.setItem("gundem.auth.token", t), token);
+  await m.goto("http://localhost:8099/");
   await m.waitForFunction(() => /hesabat günüdür/.test(document.getElementById("ai-panel").textContent), null, { timeout: 15000 });
   await m.screenshot({ path: SHOTS + "/6-mobile.png" });
   ok(true, "mobile loads with brief (cached)");
@@ -169,7 +183,7 @@ try {
   const n = await page({ width: 390, height: 844 });
   await n.addInitScript(() => {
     window.__opened = []; window.__listeners = {};
-    const Browser = { open: async (o) => { window.__opened.push(o.url); }, close: async () => { window.__closed = true; } };
+    const Browser = { open: async (o) => { window.__opened.push(o.url); }, close: async () => { localStorage.setItem("__closed", "1"); } };
     const App = { addListener: (ev, fn) => { window.__listeners[ev] = fn; return { remove() {} }; } };
     window.__bioOk = true; window.__bioCalls = 0;
     const NativeBiometric = { isAvailable: async () => ({ isAvailable: true, biometryType: 2 }), verifyIdentity: async () => { window.__bioCalls++; if (!window.__bioOk) throw new Error("fail"); } };
@@ -179,19 +193,23 @@ try {
   await n.goto("http://localhost:8099/");
   await n.waitForSelector("#gd-login button");
   await n.click("#gd-go"); await n.waitForTimeout(200);
-  ok(await n.evaluate(() => window.__opened[0] === "http://localhost:8099/auth/google/start?app=1" && window.__splashHidden), "iOS: splash hidden, login opens system browser with absolute app=1 URL");
+  ok(await n.evaluate(() => /^http:\/\/localhost:8099\/auth\/google\/start\?app=1&cc=[A-Za-z0-9_-]{43}$/.test(window.__opened[0]) && window.__splashHidden), "iOS: splash hidden, login opens system browser with absolute app=1 URL + PKCE");
   await n.evaluate(() => window.__listeners.appUrlOpen({ url: "gundem://auth?error=access_denied" }));
   ok(await n.evaluate(() => /ləğv edildi/.test(document.getElementById("gd-msg")?.textContent || "")), "iOS: cancelled Google login shows message");
-  await q("insert into login_codes (code,user_id,expires_at) values ('ioscode',$1, now()+interval '1 minute')", [u.id]);
+  await n.evaluate(() => window.__listeners.appUrlOpen({ url: "gundem://auth?code=stolen" }));
+  ok(!(await n.evaluate(() => localStorage.getItem("gundem.auth.token"))), "iOS: deep link with no login in progress is ignored");
+  await n.click("#gd-go"); await n.waitForTimeout(200);
+  const iosCC = await n.evaluate(() => new URL(window.__opened.at(-1)).searchParams.get("cc"));
+  await q("insert into login_codes (code,user_id,expires_at,challenge) values ('ioscode',$1, now()+interval '1 minute',$2)", [u.id, iosCC]);
   await n.evaluate(() => window.__listeners.appUrlOpen({ url: "gundem://auth?code=ioscode" }));
   await n.waitForFunction(() => /hesabat günüdür/.test(document.getElementById("ai-panel").textContent), null, { timeout: 15000 });
-  ok(await n.evaluate(() => window.__closed === true && !!localStorage.getItem("gundem.auth.token")), "iOS: deep link → code exchange → signed in, browser closed");
+  ok(await n.evaluate(() => localStorage.getItem("__closed") === "1" && !!localStorage.getItem("gundem.auth.token")), "iOS: deep link + PKCE verifier → signed in, browser closed");
   ok(await n.evaluate(() => /Gemini/.test(document.querySelector(".tabbar").textContent)), "iOS: assistant named Gemini (branding from server)");
   // Face ID lock
   await n.evaluate(() => { const b = document.querySelector('[data-nav="settings"]'); if (b) b.click(); else location.hash = "settings"; });
   await n.waitForSelector("#gd-lock-t", { timeout: 5000 });
   ok(await n.evaluate(() => /Face ID ilə kilidlə/.test(document.getElementById("gd-lock-row").textContent)), "iOS: settings offers 'Face ID ilə kilidlə'");
-  await n.click("#gd-lock-t"); await n.waitForTimeout(200);
+  await n.click("#gd-lock-t"); await n.waitForTimeout(1700);   // the Face ID sheet's own inactive/active events are ignored for 1.5 s
   ok(await n.evaluate(() => localStorage.getItem("gundem.lock") === "1" && window.__bioCalls === 1), "enabling the lock asks Face ID first");
   await n.evaluate(() => window.__listeners.appStateChange({ isActive: false }));
   ok(await n.isVisible("#gd-lock"), "going to background hides content (app switcher)");

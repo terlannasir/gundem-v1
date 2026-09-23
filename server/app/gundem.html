@@ -2665,8 +2665,9 @@ function mdInline(s) {
   x = x.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>").replace(/__([^_]+?)__/g, "<strong>$1</strong>");
   x = x.replace(/(^|[^*\w])\*([^*\n]+?)\*(?!\w)/g, "$1<em>$2</em>").replace(/(^|[\s(])_([^_\n]+?)_(?=[\s).,;:!?]|$)/g, "$1<em>$2</em>");
   x = x.replace(/~~([^~]+)~~/g, "<del>$1</del>");
-  x = x.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (m, t, u) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`);
-  x = x.replace(/(^|[\s(])(https:\/\/[^\s<]+[^\s<.,;:!?)])/g, (m, p, u) => `${p}<a href="${u}" target="_blank" rel="noopener">${u}</a>`);
+  // one pass for [text](url) and bare links, so generated <a> tags are never re-scanned (nested-href XSS)
+  x = x.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s"'<>]+)\)|(^|[\s(])(https:\/\/[^\s<>"']+[^\s<>"'.,;:!?)])/g,
+    (m, t, u1, p, u2) => (t !== undefined ? `<a href="${u1}" target="_blank" rel="noopener">${t}</a>` : `${p}<a href="${u2}" target="_blank" rel="noopener">${u2}</a>`));
   return x;
 }
 function mdTable(rows) {
