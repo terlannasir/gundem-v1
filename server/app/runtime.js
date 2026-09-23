@@ -357,7 +357,7 @@
     var defs = tools.map(function (t) { return { name: t.name, description: t.description || "", inputSchema: t.inputSchema || { type: "object", properties: {} } }; });
     var text = "";
     var turn = null;
-    for (var round = 0; round < 10; round++) {
+    for (var round = 0; round < 6; round++) {
       if (opts.signal && opts.signal.aborted) throw err("cancelled", "Ləğv edildi");
       var r = await api("/api/ai/sample", { body: { messages: msgs, tools: defs.length ? defs : undefined, modelTier: opts.modelTier, json: !!opts.json, turn: turn || undefined }, signal: opts.signal });
       if (r.turn) turn = r.turn;
@@ -372,7 +372,7 @@
           out = await t.execute(c.input || {}, { signal: opts.signal || new AbortController().signal });
           out = typeof out === "string" ? out : JSON.stringify(out == null ? null : out);
         } catch (e) { isErr = true; out = "Xəta: " + (e && (e.message || e.code) || e); }
-        results.push({ id: c.id, name: c.name, output: String(out).slice(0, 50000), isError: isErr });
+        results.push({ id: c.id, name: c.name, output: String(out).slice(0, 9000), isError: isErr });
       }
       msgs.push({ role: "user", toolResults: results });
     }

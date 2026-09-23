@@ -92,9 +92,34 @@ async function callGemini({ model, system, messages, tools, maxTokens, json, tie
     usage: { in: u.promptTokenCount || 0, out: (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0), thoughts: u.thoughtsTokenCount || 0, cacheRead: u.cachedContentTokenCount || 0 } };
 }
 
+// Free-tier quotas are per model: when one model answers 429 (limit reached), try the next one and
+// leave the exhausted model alone for a while (a minute for per-minute limits, an hour for daily ones).
+const cooldown = new Map();   // model -> until (ms)
+function chainFor(tier) {
+  const first = modelFor(tier);
+  const extra = (tier === "quick" ? config.ai.fallbackFast : config.ai.fallbackSmart).filter((m) => m && m !== first);
+  const all = [first, ...extra];
+  const ready = all.filter((m) => !(cooldown.get(m) > Date.now()));
+  return ready.length ? ready : [all.sort((a, b) => (cooldown.get(a) || 0) - (cooldown.get(b) || 0))[0]];
+}
 export async function generate({ tier = "default", system, messages, tools, maxTokens = 2000, json = false }) {
-  const model = modelFor(tier);
-  return config.ai.provider === "gemini"
-    ? callGemini({ model, system, messages, tools, maxTokens, json, tier })
-    : callAnthropic({ model, system, messages, tools, maxTokens });
+  if (config.ai.provider !== "gemini") return callAnthropic({ model: modelFor(tier), system, messages, tools, maxTokens });
+  const chain = chainFor(tier);
+  let last;
+  for (let i = 0; i < chain.length; i++) {
+    const model = chain[i];
+    // an echoed tool-calling turn from another model can't be continued elsewhere (thought signatures) → no fallback mid-turn
+    const hasRaw = messages.some((m) => m.raw);
+    try { return await callGemini({ model, system, messages, tools, maxTokens, json, tier }); }
+    catch (e) {
+      last = e;
+      const notFound = e.status === 400 && /not found|is not supported|unknown model/i.test(e.message);
+      if (e.code === "rate_limited" || notFound) {
+        cooldown.set(model, Date.now() + (notFound ? 24 * 3600e3 : /per day|daily|PerDay/i.test(e.message) ? 3600e3 : 60e3));
+        if (!hasRaw && i < chain.length - 1) continue;
+      }
+      throw e;
+    }
+  }
+  throw last;
 }

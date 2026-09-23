@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { config } from "./config.js";
 import { q, one } from "./db.js";
 import { generate } from "./llm.js";
@@ -47,6 +47,7 @@ const MAX_BODY = 4_000_000;   // chars of JSON messages per call (images are dow
 // Tool-use turns: round 0 is checked against the quota and counted; the follow-up rounds of the SAME answer
 // must present the server-issued turn ticket (so "round: 1" can't be used to skip the quota).
 const turns = new Map();   // id -> { uid, n, exp }
+const answerCache = new Map();   // sha256(user|tier|json|messages) -> { res, exp } — same question within 30 min = no new AI call
 function openTurn(uid) {
   const id = randomBytes(18).toString("base64url");
   if (turns.size > 5000) for (const [k, t] of turns) if (t.exp < Date.now()) turns.delete(k);
@@ -94,8 +95,15 @@ function cleanMessages(list) {
 export async function sampleRequest(user, body = {}, log) {
   if (JSON.stringify(body.messages ?? null).length > MAX_BODY) throw bad("request too large");
   const messages = cleanMessages(body.messages);
+  // earlier tool results were already used by the model — resend only a short version (the latest round stays full)
+  const lastTR = messages.map((m) => !!m.toolResults).lastIndexOf(true);
+  messages.forEach((m, i) => { if (m.toolResults && i !== lastTR) m.toolResults = m.toolResults.map((r) => ({ ...r, output: r.output.length > 1500 ? r.output.slice(0, 1500) + "\n…[qısaldıldı]" : r.output })); });
   const tools = Array.isArray(body.tools) ? body.tools.slice(0, MAX_TOOLS).map((t) => ({ name: String(t.name).slice(0, 64), description: String(t.description || "").slice(0, 2000), inputSchema: t.inputSchema && typeof t.inputSchema === "object" ? t.inputSchema : undefined })) : undefined;
   const tier = ["quick", "default", "complex"].includes(body.modelTier) ? body.modelTier : "default";
+  const cacheable = !tools?.length && !body.turn;
+  const ckey = cacheable ? createHash("sha256").update(user.id + "|" + tier + "|" + !!body.json + "|" + JSON.stringify(messages)).digest("base64url") : null;
+  const hit = ckey && answerCache.get(ckey);
+  if (hit && hit.exp > Date.now()) { log?.info({ ai: { user: user.id, cached: true } }, "ai cache hit"); return hit.res; }
   let turn = null, round = 0;
   if (body.turn) {                                // follow-up round of a tool-using answer
     turn = turns.get(String(body.turn));
@@ -115,5 +123,10 @@ export async function sampleRequest(user, body = {}, log) {
   log?.info({ ai: { user: user.id, tier, json: !!body.json, tools: tools?.length || 0, round, model: r.model, in: r.usage.in, out: r.usage.out, thoughts: r.usage.thoughts || 0, what: body.label || undefined } }, "ai usage");
   if (r.calls.length) return { stop: "tool_use", text: r.text, calls: r.calls, raw: r.raw, turn: body.turn && turn ? String(body.turn) : openTurn(user.id) };
   if (body.turn) turns.delete(String(body.turn));
-  return { stop: "end", text: r.text, truncated: r.truncated };
+  const res = { stop: "end", text: r.text, truncated: r.truncated };
+  if (ckey && r.text && !r.truncated) {
+    if (answerCache.size > 800) answerCache.delete(answerCache.keys().next().value);
+    answerCache.set(ckey, { res, exp: Date.now() + 30 * 60e3 });
+  }
+  return res;
 }

@@ -58,6 +58,7 @@ const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, init) => {
   if (!String(url).includes("generativelanguage.googleapis.com")) return realFetch(url, init);
   const body = JSON.parse(init.body); aiCalls.push({ url: String(url), body, headers: init.headers });
+  if (globalThis.__quota429 && String(url).includes(globalThis.__quota429 + ":")) return new Response(JSON.stringify({ error: { code: 429, status: "RESOURCE_EXHAUSTED", message: "Quota exceeded for metric: generate_content_free_tier_requests, limit: 250 PerDay" } }), { status: 429 });
   const hasTools = body.tools?.length, lastParts = body.contents.at(-1).parts;
   let parts;
   if (hasTools && !lastParts.some((p) => p.functionResponse)) parts = [{ functionCall: { id: "fc1", name: "search_mail", args: { query: "hesabat" } }, thoughtSignature: "sig123" }];
@@ -200,6 +201,21 @@ ok((await app.inject({ method: "POST", url: "/webhooks/revenuecat", payload: {} 
 await app.inject({ method: "POST", url: "/webhooks/revenuecat", headers: { authorization: "Bearer rc" }, payload: { event: { type: "INITIAL_PURCHASE", app_user_id: u.id, expiration_at_ms: Date.now() + 30 * 864e5 } } });
 ok((await app.inject({ url: "/api/me", headers: H })).json().plan === "premium", "RevenueCat → premium");
 ok((await sampleReq({ messages: [{ role: "user", content: "5" }] })).statusCode === 200, "premium lifts quota");
+if (PROVIDER === "gemini") {
+  const n0 = aiCalls.length;
+  r = await sampleReq({ messages: [{ role: "user", content: "eyni sual" }], modelTier: "quick" });
+  const r2 = await sampleReq({ messages: [{ role: "user", content: "eyni sual" }], modelTier: "quick" });
+  ok(r.statusCode === 200 && r2.json().text === r.json().text && aiCalls.length === n0 + 1, "identical request within 30 min → served from cache, no new AI call");
+  globalThis.__quota429 = "gemini-3.5-flash";
+  r = await sampleReq({ messages: [{ role: "user", content: "fallback testi" }] });
+  ok(r.statusCode === 200 && aiCalls.at(-2).url.includes("gemini-3.5-flash:") && aiCalls.at(-1).url.includes("gemini-2.5-flash:") && aiCalls.at(-1).body.generationConfig.thinkingConfig?.thinkingBudget === 0, "free-tier limit on one model → falls back to the next free model");
+  r = await sampleReq({ messages: [{ role: "user", content: "fallback testi 2" }] });
+  ok(aiCalls.at(-1).url.includes("gemini-2.5-flash:") && !aiCalls.at(-2).url.includes("fallback testi 2"), "exhausted model is skipped for a while");
+  globalThis.__quota429 = null;
+  const big = "x".repeat(8000);
+  await sampleReq({ messages: [{ role: "user", content: "a" }, { role: "assistant", raw: [{ text: "?" }] }, { role: "user", toolResults: [{ id: "1", name: "t", output: big }] }, { role: "assistant", raw: [{ text: "??" }] }, { role: "user", toolResults: [{ id: "2", name: "t", output: big }] }] }).catch(() => {});
+  { const c = aiCalls.at(-1).body.contents; ok(c[2].parts[0].functionResponse.response.result.length < 1600 && c[4].parts[0].functionResponse.response.result.length === 8000, "older tool results are resent shortened, the latest stays full"); }
+}
 await app.inject({ method: "POST", url: "/webhooks/revenuecat", headers: { authorization: "Bearer rc" }, payload: { event: { type: "EXPIRATION", app_user_id: u.id } } });
 ok((await app.inject({ url: "/api/me", headers: H })).json().plan === "free", "expiration → free");
 
