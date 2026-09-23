@@ -10,14 +10,23 @@
   },
   "plugins": {
     "SplashScreen": {
-      "launchShowDuration": 600,
+      "launchShowDuration": 3000,
       "launchAutoHide": true,
       "backgroundColor": "#0A2427",
-      "showSpinner": false
+      "showSpinner": true,
+      "iosSpinnerStyle": "large",
+      "spinnerColor": "#3DBFB4"
     },
     "StatusBar": {
       "overlaysWebView": true,
       "style": "DEFAULT"
     }
+  },
+  "server": {
+    "url": "https://gundem-sesi.onrender.com",
+    "allowNavigation": [
+      "gundem-sesi.onrender.com"
+    ],
+    "errorPath": "error.html"
   }
 }

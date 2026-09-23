@@ -112,15 +112,18 @@ Telefonda da işləyir: Safari-də aç → **Paylaş → Ana ekrana əlavə et**
 
 ## 7. iOS — TestFlight (15 dəq)
 
+iOS tətbiqi interfeysi **birbaşa serverdən** yükləyir (`ios/capacitor.config.json` → `server.url`). Yəni dizayn, funksiya və AI dəyişiklikləri GitHub-a push edəndə iPhone-da da avtomatik görünür — **yeni TestFlight build lazım deyil**. Yeni build yalnız ikon, ad, icazələr, server ünvanı və ya Capacitor plaginləri dəyişəndə lazımdır.
+
 Mac-də Terminal:
 
 ```bash
 cd ~/Downloads/gundem-saas/ios
 npm install
-npm run build:web -- --api https://gundem-sesi.onrender.com     # ← SƏNİN SERVER ÜNVANIN
 npx cap sync ios
 npx cap open ios
 ```
+
+Server ünvanı dəyişsə: `ios/capacitor.config.json` və `ios/www/*.html` içindəki `gundem-sesi.onrender.com` ünvanını dəyiş, `npx cap sync ios`, yeni build.
 
 Xcode-da:
 

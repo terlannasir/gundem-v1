@@ -2,8 +2,8 @@
 // Builds the standalone web app from the Gündəm UI (app/gundem.html) + runtime (app/runtime.js).
 //
 //   node scripts/build-web.mjs                                   → web/        (served by this server; API = same origin)
-//   (in ios/) npm run build:web -- --api https://gundem-xxxx.onrender.com
-//                                                                → iOS bundle  (API on the server, assistant name baked in)
+//   The iOS app loads the web app straight from the server (capacitor.config.json → server.url),
+//   so UI changes only need a push to GitHub — no new TestFlight build.
 import { readFile, writeFile, mkdir, copyFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -13,8 +13,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const arg = (k, d) => { const i = process.argv.lastIndexOf("--" + k); return i > 0 ? process.argv[i + 1] : d; };
 const out = path.resolve(root, arg("out", "web"));
 const api = arg("api", "");
-const ai = arg("ai", "");
-const capJs = arg("capacitor", "");      // iOS: path to @capacitor/core/dist/capacitor.js (plugin bridge for Browser/App)               // bake the assistant name (iOS). Web: the server applies it per request.
+const ai = arg("ai", "");               // bake the assistant name. Web: the server applies it per request.
 
 let html = await readFile(path.join(root, "app/gundem.html"), "utf8");
 const rep = (a, b) => { if (!html.includes(a)) throw new Error("patch target not found: " + a.slice(0, 80)); html = html.split(a).join(b); };
@@ -58,7 +57,8 @@ const head = `<!DOCTYPE html>
 @media (max-width:900px){html body .app{padding-top:calc(16px + env(safe-area-inset-top,0px))}}
 body::before{content:"";position:fixed;left:0;right:0;top:0;height:env(safe-area-inset-top,0px);background:var(--bg);z-index:31;pointer-events:none}
 </style>
-${capJs ? '<script src="capacitor.js"></script>\n' : ""}<script src="config.js"></script>
+<script src="capacitor.js"></script>
+<script src="config.js"></script>
 <script src="runtime.js"></script>
 `;
 html = head + html.replace(/^\s*/, "") + (html.includes("</html>") ? "" : "\n</html>\n");
@@ -67,7 +67,6 @@ if (ai) html = brand(html, ai);
 await mkdir(out, { recursive: true });
 await writeFile(path.join(out, "index.html"), html);
 await copyFile(path.join(root, "app/runtime.js"), path.join(out, "runtime.js"));
-if (capJs) await copyFile(path.resolve(process.cwd(), capJs), path.join(out, "capacitor.js"));
 await writeFile(path.join(out, "config.js"), `window.GUNDEM_CONFIG = ${JSON.stringify({ api })};\n`);
 for (const f of await readdir(path.join(root, "app/static"))) await copyFile(path.join(root, "app/static", f), path.join(out, f));
 console.log(`built ${path.relative(process.cwd(), out) || "."}/index.html  api=${api || "(same origin)"}${ai ? "  ai=" + ai : ""}`);

@@ -8,7 +8,7 @@ process.env.PUBLIC_URL = "http://localhost:8099"; process.env.PORT = "8099";
 process.env.JWT_SECRET ||= "test-secret-test-secret-test-secret"; process.env.TOKEN_ENC_KEY ||= Buffer.alloc(32, 7).toString("base64");
 process.env.DATABASE_URL ||= "postgres://gundem:gundem@127.0.0.1:5432/gundem";
 process.env.GOOGLE_CLIENT_ID ||= "cid"; process.env.GOOGLE_CLIENT_SECRET ||= "cs"; process.env.AI_PROVIDER = "gemini"; process.env.GEMINI_API_KEY ||= "g-test";
-process.env.LOG_LEVEL = "warn"; process.env.WEB_ORIGIN = "http://localhost:8100";
+process.env.LOG_LEVEL = "warn";
 const { google } = await import("googleapis");
 const { pool, one, q } = await import("../src/db.js");
 await pool.query(await readFile(new URL("../db/schema.sql", import.meta.url), "utf8"));
@@ -165,31 +165,48 @@ try {
   await m.screenshot({ path: SHOTS + "/6-mobile.png" });
   ok(true, "mobile loads with brief (cached)");
 
-  // ---- iOS bundle (capacitor://localhost in the app; here a second origin) with mocked Capacitor plugins ----
-  const { execFileSync } = await import("node:child_process");
-  execFileSync("node", ["scripts/build-web.mjs", "--out", SHOTS + "/ioswww", "--api", "http://localhost:8099", "--ai", "gemini"]);
-  const Fastify = (await import("fastify")).default, fstatic = (await import("@fastify/static")).default;
-  const ios = Fastify(); ios.register(fstatic, { root: SHOTS + "/ioswww" }); await ios.listen({ port: 8100, host: "127.0.0.1" });
+  // ---- iOS app: loads the page straight from the server (capacitor server.url); Capacitor plugins mocked ----
   const n = await page({ width: 390, height: 844 });
   await n.addInitScript(() => {
     window.__opened = []; window.__listeners = {};
     const Browser = { open: async (o) => { window.__opened.push(o.url); }, close: async () => { window.__closed = true; } };
     const App = { addListener: (ev, fn) => { window.__listeners[ev] = fn; return { remove() {} }; } };
-    window.Capacitor = { isNativePlatform: () => true, Plugins: { Browser, App } };
+    window.__bioOk = true; window.__bioCalls = 0;
+    const NativeBiometric = { isAvailable: async () => ({ isAvailable: true, biometryType: 2 }), verifyIdentity: async () => { window.__bioCalls++; if (!window.__bioOk) throw new Error("fail"); } };
+    window.Capacitor = { Plugins: { Browser, App, NativeBiometric, SplashScreen: { hide: () => { window.__splashHidden = true; } } } };
+    window.CapacitorCustomPlatform = { name: "ios" };   // makes @capacitor/core report a native platform
   });
-  await n.goto("http://localhost:8100/");
+  await n.goto("http://localhost:8099/");
   await n.waitForSelector("#gd-login button");
   await n.click("#gd-go"); await n.waitForTimeout(200);
-  ok(await n.evaluate(() => window.__opened[0] === "http://localhost:8099/auth/google/start?app=1"), "iOS: login opens system browser with app=1");
+  ok(await n.evaluate(() => window.__opened[0] === "http://localhost:8099/auth/google/start?app=1" && window.__splashHidden), "iOS: splash hidden, login opens system browser with absolute app=1 URL");
   await n.evaluate(() => window.__listeners.appUrlOpen({ url: "gundem://auth?error=access_denied" }));
   ok(await n.evaluate(() => /ləğv edildi/.test(document.getElementById("gd-msg")?.textContent || "")), "iOS: cancelled Google login shows message");
   await q("insert into login_codes (code,user_id,expires_at) values ('ioscode',$1, now()+interval '1 minute')", [u.id]);
   await n.evaluate(() => window.__listeners.appUrlOpen({ url: "gundem://auth?code=ioscode" }));
   await n.waitForFunction(() => /hesabat günüdür/.test(document.getElementById("ai-panel").textContent), null, { timeout: 15000 });
   ok(await n.evaluate(() => window.__closed === true && !!localStorage.getItem("gundem.auth.token")), "iOS: deep link → code exchange → signed in, browser closed");
-  ok(await n.evaluate(() => /Gemini/.test(document.querySelector(".tabbar").textContent)), "iOS bundle: assistant named Gemini");
+  ok(await n.evaluate(() => /Gemini/.test(document.querySelector(".tabbar").textContent)), "iOS: assistant named Gemini (branding from server)");
+  // Face ID lock
+  await n.evaluate(() => { const b = document.querySelector('[data-nav="settings"]'); if (b) b.click(); else location.hash = "settings"; });
+  await n.waitForSelector("#gd-lock-t", { timeout: 5000 });
+  ok(await n.evaluate(() => /Face ID ilə kilidlə/.test(document.getElementById("gd-lock-row").textContent)), "iOS: settings offers 'Face ID ilə kilidlə'");
+  await n.click("#gd-lock-t"); await n.waitForTimeout(200);
+  ok(await n.evaluate(() => localStorage.getItem("gundem.lock") === "1" && window.__bioCalls === 1), "enabling the lock asks Face ID first");
+  await n.evaluate(() => window.__listeners.appStateChange({ isActive: false }));
+  ok(await n.isVisible("#gd-lock"), "going to background hides content (app switcher)");
+  await n.evaluate(() => window.__listeners.appStateChange({ isActive: true }));
+  ok(!(await n.isVisible("#gd-lock")), "back within 1 min → no prompt");
+  await n.evaluate(() => { window.__bioOk = false; window.__listeners.appStateChange({ isActive: false }); });
+  await n.evaluate(() => { const d = Date.now; Date.now = () => d() + 120000; window.__listeners.appStateChange({ isActive: true }); });
+  await n.waitForTimeout(500);
+  ok(await n.isVisible("#gd-lock") && /alınmadı/.test(await n.textContent("#gd-lock-msg")), "after >1 min Face ID is required; failure keeps it locked");
+  await n.screenshot({ path: SHOTS + "/8-lock.png" });
+  await n.evaluate(() => { window.__bioOk = true; }); await n.click("#gd-lock-go"); await n.waitForTimeout(200);
+  ok(!(await n.isVisible("#gd-lock")), "successful Face ID unlocks");
+  await n.reload(); await n.waitForTimeout(800);
+  ok(await n.evaluate(() => window.__bioCalls === 1 && !document.getElementById("gd-lock")), "cold start with lock on → Face ID prompt → unlocked");
   await n.screenshot({ path: SHOTS + "/7-ios.png" });
-  await ios.close();
 
   // sign out → login screen, token gone
   await p.evaluate(() => window.GundemAuth.signOut());

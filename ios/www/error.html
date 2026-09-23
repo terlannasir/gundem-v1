@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="az">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gündəm</title>
+<style>
+html,body{height:100%;margin:0}
+body{background:linear-gradient(160deg,#0A2427,#0C5B55);color:#EFFAF8;font-family:-apple-system,system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:max(24px,env(safe-area-inset-top)) 24px max(24px,env(safe-area-inset-bottom));text-align:center}
+h1{margin:0 0 8px;font-size:28px}
+p{margin:0 auto;max-width:32ch;color:#A9D4CE;font-size:15.5px;line-height:1.5}
+button{margin-top:24px;width:100%;max-width:340px;border:0;border-radius:14px;padding:15px;font:700 16px -apple-system,system-ui,sans-serif;background:#EFFAF8;color:#0A2427}
+button[disabled]{opacity:.6}
+</style>
+</head>
+<body>
+<h1>Gündəm</h1>
+<p id="msg">Serverə qoşulmaq alınmadı. İnterneti yoxla — server yuxudan oyanırsa, bu 30–60 saniyə çəkə bilər.</p>
+<button id="retry" type="button">Yenidən cəhd et</button>
+<script>
+(function () {
+  var URL_ = "https://gundem-sesi.onrender.com";
+  var b = document.getElementById("retry"), m = document.getElementById("msg");
+  function go() {
+    if (!navigator.onLine) { m.textContent = "İnternet bağlantısı yoxdur."; return; }
+    b.disabled = true; b.textContent = "Qoşulur…";
+    fetch(URL_ + "/health", { cache: "no-store" }).then(function () { location.replace(URL_); })
+      .catch(function () { b.disabled = false; b.textContent = "Yenidən cəhd et"; m.textContent = "Server hələ cavab vermir. Bir az sonra yenidən cəhd et."; });
+  }
+  b.onclick = go;
+  window.addEventListener("online", go);
+  setTimeout(go, 4000);   // Render free plan: first request wakes the server; try again automatically
+})();
+</script>
+</body>
+</html>

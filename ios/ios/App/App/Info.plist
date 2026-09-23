@@ -71,6 +71,8 @@
 			<array><string>gundem</string></array>
 		</dict>
 	</array>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Gündəmi Face ID ilə kilidləmək və açmaq üçün.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>CFBundleLocalizations</key>

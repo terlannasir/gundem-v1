@@ -6,6 +6,7 @@
   "use strict";
   var CFG = window.GUNDEM_CONFIG || {};
   var API = String(CFG.api || "").replace(/\/$/, "");
+  var BASE = API || location.origin;   // absolute server URL (the iOS app loads this page straight from the server)
   var Cap = window.Capacitor;
   var NATIVE = !!(Cap && Cap.isNativePlatform && Cap.isNativePlatform());
   var TK = "gundem.auth.token", CACHE = "gundem.rt.cache.";
@@ -18,7 +19,7 @@
   var plugins = {};
   function plugin(name) {   // @capacitor/core (capacitor.js) is bundled in the iOS build → registerPlugin gives the native proxy
     if (!Cap) return null;
-    if (!plugins[name]) plugins[name] = (Cap.registerPlugin ? Cap.registerPlugin(name) : null) || (Cap.Plugins && Cap.Plugins[name]) || null;
+    if (!plugins[name]) plugins[name] = (Cap.Plugins && Cap.Plugins[name]) || (Cap.registerPlugin ? Cap.registerPlugin(name) : null) || null;
     return plugins[name];
   }
 
@@ -97,7 +98,7 @@
     if (!NATIVE) { busy(true, "Google açılır…"); location.href = API + "/auth/google/start"; return; }
     var Browser = plugin("Browser");
     busy(true, "Google açılır…");
-    try { await Browser.open({ url: API + "/auth/google/start?app=1", presentationStyle: "popover" }); }
+    try { await Browser.open({ url: BASE + "/auth/google/start?app=1", presentationStyle: "popover" }); }
     catch (e) { busy(false); showLogin("Brauzer açılmadı: " + (e && e.message || e)); }
     setTimeout(function () { busy(false); }, 4000);
   }
@@ -155,8 +156,10 @@
       var wrap = document.createElement("div"); wrap.style.cssText = "margin-top:14px;padding-top:14px;border-top:1px solid var(--line)";
       wrap.innerHTML = '<p class="meta" style="margin:0 0 8px">Hesab: ' + (me && me.email ? me.email.replace(/[<>&"]/g, "") : "") + (me && me.plan === "premium" ? " · Premium" : " · Pulsuz plan") +
         (me && me.limits ? " · AI: " + (me.usage ? me.usage.ai : 0) + "/" + me.limits.ai + " bu ay" : "") + '</p>' +
+        '<div id="gd-lock-row"></div>' +
         '<button class="btn ghost" type="button" id="gd-del" style="color:var(--rose)">Hesabı birdəfəlik sil</button><div id="gd-del-c"></div>';
       anchor.parentNode.insertBefore(wrap, anchor.nextSibling);
+      renderLockRow();
       document.getElementById("gd-del").addEventListener("click", function () {
         var c = document.getElementById("gd-del-c");
         c.innerHTML = '<p class="note err" style="margin:10px 0">Hesabın, Google icazəsi və Gündəmdə saxlanan bütün məlumat silinəcək. Gmail, Təqvim və Drive-dakı faylların toxunulmaz qalır.</p><button class="btn" type="button" id="gd-del-yes" style="background:var(--rose);color:#fff;border-color:var(--rose)">Bəli, hesabı sil</button>';
@@ -166,6 +169,68 @@
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", run); else run();
     new MutationObserver(function () { if (!document.getElementById("gd-del")) run(); }).observe(document.documentElement, { childList: true, subtree: true });
   }
+
+  /* ---------------- Face ID / Touch ID lock (iOS app) ---------------- */
+  var LOCK = "gundem.lock", GRACE = 60000;
+  var bio = { ok: false, name: "Face ID" }, locked = false, prompting = false, bgAt = 0;
+  var lockOn = function () { return ls.get(LOCK) === "1"; };
+  var LOCK_CSS = "#gd-lock{position:fixed;inset:0;z-index:2147483600;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;background:linear-gradient(160deg,#0A2427,#0C5B55);color:#EFFAF8;font-family:Onest,-apple-system,system-ui,sans-serif;text-align:center}" +
+    "#gd-lock h2{margin:8px 0 0;font:600 24px Unbounded,Onest,system-ui,sans-serif}#gd-lock p{margin:0;color:#A9D4CE;font-size:15px}#gd-lock button{margin-top:18px;border:0;border-radius:14px;padding:14px 26px;font:700 16px inherit;font-family:inherit;background:#EFFAF8;color:#0A2427}";
+  function lockOverlay(show, msg) {
+    var el = document.getElementById("gd-lock");
+    if (!show) { if (el) el.remove(); return; }
+    if (!el) {
+      if (!document.getElementById("gd-lock-css")) { var st = document.createElement("style"); st.id = "gd-lock-css"; st.textContent = LOCK_CSS; document.head.appendChild(st); }
+      el = document.createElement("div"); el.id = "gd-lock"; el.setAttribute("role", "dialog"); el.setAttribute("aria-modal", "true");
+      el.innerHTML = '<div style="width:84px;height:84px;border-radius:24px;background:rgba(255,255,255,.1);display:grid;place-items:center">' + LOGO.replace('<svg ', '<svg width="44" height="44" ') + '</div><h2>Gündəm kilidlidir</h2><p id="gd-lock-msg"></p><button type="button" id="gd-lock-go"></button>';
+      (document.body || document.documentElement).appendChild(el);
+      document.getElementById("gd-lock-go").addEventListener("click", unlock);
+    }
+    document.getElementById("gd-lock-go").textContent = bio.name + " ilə aç";
+    document.getElementById("gd-lock-msg").textContent = msg || "";
+  }
+  async function unlock() {
+    if (prompting) return;
+    var B = plugin("NativeBiometric"); if (!B) { locked = false; lockOverlay(false); return; }
+    prompting = true;
+    try {
+      await B.verifyIdentity({ reason: "Gündəmi açmaq üçün", title: "Gündəm", useFallback: true });
+      locked = false; lockOverlay(false);
+    } catch (e) { lockOverlay(true, "Təsdiq alınmadı — yenidən cəhd et."); }
+    finally { prompting = false; bgAt = 0; }
+  }
+  function lockNow(prompt) { locked = true; lockOverlay(true); if (prompt) setTimeout(unlock, 250); }
+  async function initLock() {
+    if (!NATIVE) return;
+    var B = plugin("NativeBiometric");
+    try {
+      var r = B && await B.isAvailable({ useFallback: true });
+      bio.ok = !!(r && r.isAvailable); bio.name = r && r.biometryType === 1 ? "Touch ID" : r && r.biometryType === 2 ? "Face ID" : "Kod";
+    } catch (e) { bio.ok = false; }                 // older build without the plugin → no lock option
+    renderLockRow();
+    if (bio.ok && lockOn()) lockNow(true);
+    var App = plugin("App");
+    if (App) App.addListener("appStateChange", function (st) {
+      if (prompting || !bio.ok || !lockOn()) return;  // the Face ID sheet itself makes the app inactive
+      if (!st.isActive) { bgAt = Date.now(); if (!locked) lockOverlay(true); }   // hide content in the app switcher
+      else if (locked || (bgAt && Date.now() - bgAt > GRACE)) lockNow(true);
+      else { lockOverlay(false); bgAt = 0; }
+    });
+  }
+  function renderLockRow() {
+    var row = document.getElementById("gd-lock-row"); if (!row) return;
+    if (!bio.ok) { row.replaceChildren(); return; }
+    row.innerHTML = '<label class="chkrow" style="margin:0 0 12px"><input type="checkbox" id="gd-lock-t"> ' + bio.name + ' ilə kilidlə <span class="meta">(tətbiq 1 dəqiqədən çox arxa planda qalanda)</span></label>';
+    var t = document.getElementById("gd-lock-t"); t.checked = lockOn();
+    t.addEventListener("change", async function () {
+      if (!t.checked) { ls.del(LOCK); return; }
+      var B = plugin("NativeBiometric"); prompting = true;
+      try { await B.verifyIdentity({ reason: bio.name + " kilidini aktivləşdirmək üçün", title: "Gündəm", useFallback: true }); ls.set(LOCK, "1"); }
+      catch (e) { t.checked = false; }
+      finally { prompting = false; }
+    });
+  }
+  window.GundemLock = { lockNow: lockNow, state: function () { return { available: bio.ok, on: lockOn(), locked: locked }; } };
 
   /* ---------------- mcp ---------------- */
   var watches = new Map(); var wid = 0;
@@ -349,5 +414,7 @@
     }
   });
 
+  if (NATIVE) { try { var sp = plugin("SplashScreen"); if (sp) sp.hide(); } catch (e) {} }
+  if (NATIVE) { if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initLock); else initLock(); }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
 })();

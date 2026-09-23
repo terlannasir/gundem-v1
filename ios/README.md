@@ -1,25 +1,20 @@
 # Gündəm — iOS
 
-Capacitor 8 (Swift Package Manager, CocoaPods lazım deyil). İnterfeys tətbiqin içinə yığılır (`www/`), məlumat isə sənin serverindən gəlir.
+Capacitor 8 (Swift Package Manager). Tətbiq interfeysi **serverdən** yükləyir: `capacitor.config.json` → `server.url = https://gundem-sesi.onrender.com`. İnterfeys dəyişiklikləri üçün yeni build lazım deyil — GitHub-a push → Render deploy → tətbiq növbəti açılışda yeni versiyanı göstərir.
 
 ```bash
 npm install
-npm run build:web -- --api https://gundem-sesi.onrender.com   # interfeysi yığır (../server/app-dan)
 npx cap sync ios
-npx cap open ios
+npx cap open ios      # Team seç → Product → Archive → Upload
 ```
 
-Ətraflı addımlar: `../README.md`, 7-ci bölmə.
+Yeni TestFlight build yalnız bunlar dəyişəndə lazımdır: ikon/ad, Info.plist, server ünvanı, Capacitor plaginləri, Swift kodu. Hər build-də **General → Build** nömrəsini 1 artır.
 
 | | |
 |---|---|
 | Bundle ID | `az.gundem.app` |
-| Versiya | 1.0 (build 2) |
 | Minimum iOS | 15.0 · iPhone · şaquli |
 | Giriş | Google → Safari pəncərəsi → `gundem://auth?code=…` → tətbiq |
+| İnternet yoxdursa | `www/error.html` — "Yenidən cəhd et" (server yatıbsa özü təkrar yoxlayır) |
 
-Fayllar:
-- `ios/App/App/Info.plist` — `gundem://` URL sxemi, şifrələmə qeydi
-- `ios/App/App/GundemViewController.swift` — aşağı çəkib yeniləmə
-- `ios/App/App/SceneDelegate.swift` — əsas ekran
-- `www/` — `npm run build:web` ilə yaranır, əl ilə dəyişmə
+**Face ID kilidi:** Ayarlar → «Face ID ilə kilidlə». Tətbiq 1 dəqiqədən çox arxa planda qalanda və ya yenidən açılanda Face ID istənir (alınmasa iPhone kodu ilə). Arxa plana keçəndə məzmun gizlədilir ki, tətbiq keçid ekranında görünməsin. Plagin: `@capgo/capacitor-native-biometric`.
