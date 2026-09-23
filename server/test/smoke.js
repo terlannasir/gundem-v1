@@ -58,7 +58,8 @@ const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, init) => {
   if (!String(url).includes("generativelanguage.googleapis.com")) return realFetch(url, init);
   const body = JSON.parse(init.body); aiCalls.push({ url: String(url), body, headers: init.headers });
-  if (globalThis.__quota429 && String(url).includes(globalThis.__quota429 + ":")) return new Response(JSON.stringify({ error: { code: 429, status: "RESOURCE_EXHAUSTED", message: "Quota exceeded for metric: generate_content_free_tier_requests, limit: 250 PerDay" } }), { status: 429 });
+  if (String(url).includes("gemini-3.6-flash:")) return new Response(JSON.stringify({ error: { code: 404, status: "NOT_FOUND", message: "This model models/gemini-3.6-flash is no longer available to new users." } }), { status: 404 });
+  if (globalThis.__quota429 && (globalThis.__quota429 === "ALL" || String(url).includes(globalThis.__quota429 + ":"))) return new Response(JSON.stringify({ error: { code: 429, status: "RESOURCE_EXHAUSTED", message: "Quota exceeded for metric: generate_content_free_tier_requests, limit: 250 PerDay" } }), { status: 429 });
   const hasTools = body.tools?.length, lastParts = body.contents.at(-1).parts;
   let parts;
   if (hasTools && !lastParts.some((p) => p.functionResponse)) parts = [{ functionCall: { id: "fc1", name: "search_mail", args: { query: "hesabat" } }, thoughtSignature: "sig123" }];
@@ -208,9 +209,12 @@ if (PROVIDER === "gemini") {
   ok(r.statusCode === 200 && r2.json().text === r.json().text && aiCalls.length === n0 + 1, "identical request within 30 min → served from cache, no new AI call");
   globalThis.__quota429 = "gemini-3.5-flash";
   r = await sampleReq({ messages: [{ role: "user", content: "fallback testi" }] });
-  ok(r.statusCode === 200 && aiCalls.at(-2).url.includes("gemini-3.5-flash:") && aiCalls.at(-1).url.includes("gemini-2.5-flash:") && aiCalls.at(-1).body.generationConfig.thinkingConfig?.thinkingBudget === 0, "free-tier limit on one model → falls back to the next free model");
+  ok(r.statusCode === 200 && aiCalls.at(-3).url.includes("gemini-3.5-flash:") && aiCalls.at(-2).url.includes("gemini-3.6-flash:") && aiCalls.at(-1).url.includes("gemini-3.7-flash:"), "limit on one model → next free model; a retired model is skipped");
   r = await sampleReq({ messages: [{ role: "user", content: "fallback testi 2" }] });
-  ok(aiCalls.at(-1).url.includes("gemini-2.5-flash:") && !aiCalls.at(-2).url.includes("fallback testi 2"), "exhausted model is skipped for a while");
+  ok(aiCalls.at(-1).url.includes("gemini-3.7-flash:") && !String(aiCalls.at(-2).body.contents[0].parts[0].text).includes("fallback testi 2"), "exhausted and retired models are skipped for a while");
+  globalThis.__quota429 = "ALL";
+  r = await sampleReq({ messages: [{ role: "user", content: "hamısı dolub" }] });
+  ok(r.statusCode === 429 && r.json().error === "rate_limited", "all free models exhausted → clear 'limit reached' error, not a retired-model error");
   globalThis.__quota429 = null;
   const big = "x".repeat(8000);
   await sampleReq({ messages: [{ role: "user", content: "a" }, { role: "assistant", raw: [{ text: "?" }] }, { role: "user", toolResults: [{ id: "1", name: "t", output: big }] }, { role: "assistant", raw: [{ text: "??" }] }, { role: "user", toolResults: [{ id: "2", name: "t", output: big }] }] }).catch(() => {});

@@ -34,8 +34,8 @@ export const config = {
       ? { smart: process.env.MODEL_SMART || "gemini-3.5-flash", fast: process.env.MODEL_FAST || "gemini-3.5-flash-lite" }
       : { smart: process.env.MODEL_SMART || "claude-sonnet-5", fast: process.env.MODEL_FAST || "claude-haiku-4-5-20251001" },
     // Gemini only: other free models to fall back to when the first one hits its free-tier limit (comma-separated)
-    fallbackSmart: (process.env.MODEL_FALLBACK_SMART ?? "gemini-2.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite").split(",").map((s) => s.trim()).filter(Boolean),
-    fallbackFast: (process.env.MODEL_FALLBACK_FAST ?? "gemini-3.1-flash-lite,gemini-2.5-flash,gemini-3.5-flash").split(",").map((s) => s.trim()).filter(Boolean),
+    fallbackSmart: (process.env.MODEL_FALLBACK_SMART ?? "gemini-3.6-flash,gemini-3.7-flash,gemini-3.8-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite").split(",").map((s) => s.trim()).filter(Boolean),
+    fallbackFast: (process.env.MODEL_FALLBACK_FAST ?? "gemini-3.1-flash-lite,gemini-3.6-flash,gemini-3.5-flash").split(",").map((s) => s.trim()).filter(Boolean),
   },
   // USD per 1M tokens [input, output]. Gemini free tier = 0. Keep in sync with the providers' pricing pages.
   prices: { "claude-sonnet-5": [2, 10], "claude-haiku-4-5-20251001": [1, 5], "claude-opus-5-5": [4, 20] },

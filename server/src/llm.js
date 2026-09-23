@@ -105,21 +105,20 @@ function chainFor(tier) {
 export async function generate({ tier = "default", system, messages, tools, maxTokens = 2000, json = false }) {
   if (config.ai.provider !== "gemini") return callAnthropic({ model: modelFor(tier), system, messages, tools, maxTokens });
   const chain = chainFor(tier);
-  let last;
+  const hasRaw = messages.some((m) => m.raw);   // a tool-calling turn can't move to another model (thought signatures)
+  let last, quotaErr;
   for (let i = 0; i < chain.length; i++) {
     const model = chain[i];
-    // an echoed tool-calling turn from another model can't be continued elsewhere (thought signatures) → no fallback mid-turn
-    const hasRaw = messages.some((m) => m.raw);
     try { return await callGemini({ model, system, messages, tools, maxTokens, json, tier }); }
     catch (e) {
       last = e;
-      const notFound = e.status === 400 && /not found|is not supported|unknown model/i.test(e.message);
-      if (e.code === "rate_limited" || notFound) {
-        cooldown.set(model, Date.now() + (notFound ? 24 * 3600e3 : /per day|daily|PerDay/i.test(e.message) ? 3600e3 : 60e3));
-        if (!hasRaw && i < chain.length - 1) continue;
-      }
-      throw e;
+      // retired / unknown model ("no longer available", "not found", "not supported") → skip it for a day
+      const gone = (e.status === 400 || e.status === 403 || e.status === 404) && /no longer available|not found|not supported|unknown model|deprecated|does not exist/i.test(e.message);
+      if (e.code === "rate_limited") { quotaErr = e; cooldown.set(model, Date.now() + (/per ?day|daily/i.test(e.message) ? 3600e3 : 60e3)); }
+      else if (gone) cooldown.set(model, Date.now() + 24 * 3600e3);
+      else throw e;
+      if (hasRaw) break;
     }
   }
-  throw last;
+  throw quotaErr || last;   // "limit reached" is the useful message, not a retired fallback model
 }
