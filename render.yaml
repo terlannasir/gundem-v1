@@ -1,0 +1,29 @@
+# Render Blueprint — New → Blueprint → bu repo. Pulsuz plan.
+services:
+  - type: web
+    name: gundem
+    runtime: node
+    plan: free
+    region: frankfurt
+    rootDir: server
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: AI_PROVIDER
+        value: gemini
+      - key: JWT_SECRET
+        generateValue: true
+      - key: TOKEN_ENC_KEY
+        generateValue: true
+      - key: DATABASE_URL          # Supabase → Connect → Session pooler
+        sync: false
+      - key: GEMINI_API_KEY        # aistudio.google.com/apikey
+        sync: false
+      - key: GOOGLE_CLIENT_ID      # Google Cloud → Clients (əvvəlcə "temp" yaz, sonra dəyiş)
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false

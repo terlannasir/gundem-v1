@@ -1,0 +1,22 @@
+{
+  "name": "gundem-ios",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Gündəm — iOS app (Capacitor). The web UI is bundled from ../server/app",
+  "scripts": {
+    "build:web": "node ../server/scripts/build-web.mjs --out ../ios/www --ai gemini --capacitor node_modules/@capacitor/core/dist/capacitor.js",
+    "sync": "cap sync ios",
+    "open": "cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/core": "8.5.2",
+    "@capacitor/ios": "8.5.2",
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/browser": "^8.0.0",
+    "@capacitor/splash-screen": "^8.0.0",
+    "@capacitor/status-bar": "^8.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.2"
+  }
+}
