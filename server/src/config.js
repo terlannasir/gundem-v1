@@ -21,6 +21,7 @@ export const config = {
   jwtSecret: new TextEncoder().encode(req("JWT_SECRET")),
   tokenKey,
   databaseUrl: req("DATABASE_URL"),
+  databaseCa: (process.env.DATABASE_CA || "").replace(/\\n/g, "\n").trim() || null,
   google: { clientId: req("GOOGLE_CLIENT_ID"), clientSecret: req("GOOGLE_CLIENT_SECRET") },
   // "full" = whole Drive (needed to list the user's existing docs; fine in Testing mode).
   // "file" = only files this app created (no restricted-scope review, but the Docs list starts empty).
@@ -47,4 +48,5 @@ export const config = {
   },
   revenuecatSecret: process.env.REVENUECAT_WEBHOOK_SECRET || "",
 };
+if (req("JWT_SECRET").length < 32) throw new Error("JWT_SECRET is too short — use at least 32 random characters (openssl rand -base64 32)");
 if (rawKey.length < 24) throw new Error("TOKEN_ENC_KEY is too short — use: openssl rand -base64 32");

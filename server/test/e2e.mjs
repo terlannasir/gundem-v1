@@ -9,7 +9,7 @@ process.env.JWT_SECRET ||= "test-secret-test-secret-test-secret"; process.env.TO
 process.env.DATABASE_URL ||= "postgres://gundem:gundem@127.0.0.1:5432/gundem";
 process.env.GOOGLE_CLIENT_ID ||= "cid"; process.env.GOOGLE_CLIENT_SECRET ||= "cs"; process.env.AI_PROVIDER = "gemini"; process.env.GEMINI_API_KEY ||= "g-test";
 process.env.LOG_LEVEL = "warn";
-const { google } = await import("googleapis");
+const { google } = await import("../src/gapi.js");
 const { pool, one, q } = await import("../src/db.js");
 await pool.query(await readFile(new URL("../db/schema.sql", import.meta.url), "utf8"));
 await q("truncate users cascade");
@@ -27,13 +27,15 @@ const TH = [
   { id: "t2", from: "Kapital Bank <noreply@kapitalbank.az>", subj: "Kart əməliyyatı", body: "Kartınızla 25 AZN ödəniş edildi.", labels: ["INBOX", "CATEGORY_UPDATES"], ago: 5 },
   { id: "t3", from: "Trendyol <kampaniya@trendyol.com>", subj: "50% endirim yalnız bu gün!", body: "Kampaniya", labels: ["INBOX", "CATEGORY_PROMOTIONS", "UNREAD"], ago: 8 },
   { id: "t4", from: "Rəşad Məmmədov <rashad@company.az>", subj: "Sabahkı görüş", body: "Sabah 10:00-da görüşək?", labels: ["INBOX"], ago: 20 },
+  { id: "t5", from: "Nigar Əliyeva <nigar@company.az>", subj: "Keçən ayın müqaviləsi", body: "Müqavilə əlavədədir.", labels: [], ago: 200 },
 ];
+const inInbox = (t) => t.labels.includes("INBOX");
 const msg = (t) => ({ id: "m_" + t.id, threadId: t.id, labelIds: t.labels, snippet: t.body.slice(0, 60), internalDate: String(now - t.ago * 3600e3),
   payload: { mimeType: "text/plain", headers: [{ name: "From", value: t.from }, { name: "To", value: "Tərlan <me@x.az>" }, { name: "Subject", value: t.subj }, { name: "Message-ID", value: `<${t.id}@x>` }], body: { data: b64u(t.body) } } });
 const sent = [];
 google.gmail = () => ({ users: {
   getProfile: async () => ({ data: { emailAddress: "me@x.az" } }),
-  threads: { list: async ({ q: qs }) => ({ data: { threads: (/in:sent/.test(qs) ? [] : TH).map((t) => ({ id: t.id })) } }),
+  threads: { list: async ({ q: qs }) => ({ data: { threads: (/-in:inbox/.test(qs) ? TH.filter((t) => !inInbox(t)) : /in:sent/.test(qs) ? [] : TH.filter(inInbox)).map((t) => ({ id: t.id })) } }),
     get: async ({ id }) => { const t = TH.find((x) => x.id === id); return { data: { id, messages: [msg(t)] } }; } },
   messages: { get: async ({ id }) => ({ data: msg(TH.find((t) => "m_" + t.id === id)) }),
     modify: async ({ id, requestBody }) => { const t = TH.find((x) => "m_" + x.id === id); t.labels = t.labels.filter((l) => !(requestBody.removeLabelIds || []).includes(l)).concat(requestBody.addLabelIds || []); return { data: { id, labelIds: t.labels } }; },
@@ -85,7 +87,7 @@ await q("insert into user_state (user_id,key,value) values ($1,'profile',$2)", [
 const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
 const errors = [];
 async function page(viewport) {
-  const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1 });
+  const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1, serviceWorkers: "block" });
   await ctx.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort());
   const p = await ctx.newPage();
   p.on("pageerror", (e) => errors.push(e.message));
@@ -145,6 +147,15 @@ try {
   await p.waitForFunction(() => /Göndərildi/.test(document.getElementById("toast").textContent), null, { timeout: 8000 });
   { const raw = Buffer.from(sent.at(-1)?.raw || "", "base64url").toString(), subj = raw.match(/Subject: =\?UTF-8\?B\?(.+?)\?=/);
   ok(sent.at(-1)?.threadId === "t1" && /^To: Aysel Quliyeva <aysel@company\.az>/m.test(raw) && subj && Buffer.from(subj[1], "base64").toString().startsWith("Re: Q3"), "reply sent through Gmail API (threaded, Re: subject)"); }
+
+  // archive view: archived mail is visible and can go back to the inbox
+  await p.click('[data-nav="mail"]'); await p.click('#mail-tabs [data-view="archive"]');
+  await p.waitForSelector('#mail-list [data-id="t5"]', { timeout: 8000 });
+  ok(await p.isVisible("text=Keçən ayın müqaviləsi"), "Arxiv tab lists archived mail");
+  await p.screenshot({ path: SHOTS + "/9-archive.png" });
+  await p.click('#mail-list [data-id="t5"] .unarch'); await p.waitForTimeout(600);
+  ok(TH[4].labels.includes("INBOX") && !(await p.$('#mail-list [data-id="t5"]')), "'↩ Gələnlərə' puts it back in the inbox (Gmail label)");
+  await p.click('#mail-tabs [data-view="all"]').catch(() => {});
 
   // docs
   await p.keyboard.press("Escape");
@@ -225,6 +236,15 @@ try {
   await n.reload(); await n.waitForTimeout(800);
   ok(await n.evaluate(() => window.__bioCalls === 1 && !document.getElementById("gd-lock")), "cold start with lock on → Face ID prompt → unlocked");
   await n.screenshot({ path: SHOTS + "/7-ios.png" });
+
+  // service worker (web): registers and caches the app shell
+  { const ctx = await browser.newContext({ viewport: { width: 800, height: 600 } }); await ctx.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort());
+    const w = await ctx.newPage(); w.on("pageerror", (e) => errors.push(e.message));
+    await w.goto("http://localhost:8099/");
+    let cached = 0;
+    for (let i = 0; i < 20 && cached < 5; i++) { await w.waitForTimeout(500); cached = await w.evaluate(async () => { const ks = await caches.keys(); if (!ks.length) return 0; const c = await caches.open(ks[0]); return (await c.keys()).length; }); }
+    ok(cached >= 5, "service worker active, app shell cached (" + cached + " files)");
+    await ctx.close(); }
 
   // sign out → login screen, token gone
   await p.evaluate(() => window.GundemAuth.signOut());

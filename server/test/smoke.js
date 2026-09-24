@@ -8,7 +8,7 @@ process.env.GOOGLE_CLIENT_ID ||= "cid"; process.env.GOOGLE_CLIENT_SECRET ||= "cs
 process.env.AI_PROVIDER = process.env.TEST_PROVIDER || "gemini"; process.env.GEMINI_API_KEY ||= "g-test"; process.env.ANTHROPIC_API_KEY ||= "sk-test";
 process.env.REVENUECAT_WEBHOOK_SECRET ||= "rc"; process.env.FREE_AI_REQUESTS = "3";
 const { readFile } = await import("node:fs/promises");
-const { google } = await import("googleapis");
+const { google } = await import("../src/gapi.js");
 const { pool, one, q } = await import("../src/db.js");
 await pool.query(await readFile(new URL("../db/schema.sql", import.meta.url), "utf8"));
 await q("truncate users cascade");
@@ -86,6 +86,16 @@ ok((await app.inject("/health")).json().ok, "health");
 let r = await app.inject("/");
 ok(r.statusCode === 200 && r.body.includes("runtime.js") && (PROVIDER === "gemini" ? r.body.includes("Gemini ilə") && !/\bClaude-a\b/.test(r.body) : r.body.includes("Claude")), `web app served with ${PROVIDER} branding`);
 ok((await app.inject("/privacy.html")).statusCode === 200 && (await app.inject("/runtime.js")).statusCode === 200, "privacy + runtime served");
+{ const a = await app.inject({ url: "/", headers: { "accept-encoding": "br, gzip" } });
+  const csp = a.headers["content-security-policy"] || "";
+  ok(a.headers["content-encoding"] === "br" && a.rawPayload.length < 60000 && a.headers.etag && /script-src 'self'/.test(csp) && !/unsafe-inline[^;]*;[^;]*script|script-src[^;]*unsafe-inline/.test(csp) && a.headers["strict-transport-security"], "index: brotli, ETag, strict CSP (no inline scripts), HSTS");
+  ok((await app.inject({ url: "/", headers: { "if-none-match": a.headers.etag } })).statusCode === 304, "repeat open → 304 Not Modified");
+  const body = (await app.inject("/")).body;
+  ok(!/<script>/.test(body) && /app\.js\?v=\w+-/.test(body), "no inline <script>; app.js versioned per provider");
+  const js = await app.inject("/app.js");
+  ok(js.statusCode === 200 && /immutable/.test(js.headers["cache-control"]) && (PROVIDER !== "gemini" || /Gemini ilə/.test(js.body)), "app.js branded + cached immutable");
+  const sw = await app.inject("/sw.js");
+  ok(sw.statusCode === 200 && /no-cache/.test(sw.headers["cache-control"]) && /\/\^\\\/\(api\|auth/.test(sw.body) || /api\|auth/.test(sw.body), "service worker served, never caches /api or /auth"); }
 const { createHash } = await import("node:crypto");
 const VER = "v".repeat(43), CC = createHash("sha256").update(VER).digest("base64url");
 ok((await app.inject("/auth/google/start?app=1")).statusCode === 400, "start without PKCE challenge rejected");
@@ -124,6 +134,11 @@ const m0 = r.json().payload.messages[0];
 ok(m0.plaintextBody.startsWith("Salam, hesabatı") && m0.attachments[0].filename === "hesabat.pdf" && m0.ccRecipients[0] === "boss@x.az", "get_thread: body + attachments + cc");
 r = await tool("Gmail", "get_message", { messageId: "m1", messageFormat: "RAW" });
 ok(Buffer.from(r.json().payload.raw, "base64url").toString().includes("body é"), "get_message RAW");
+{ // hostile mail must not stall the server (regex backtracking)
+  const big = { id: "hx", threadId: "hx", labelIds: [], snippet: "", internalDate: "0", payload: { mimeType: "text/html", headers: [{ name: "From", value: "x@y" }, { name: "To", value: "a,".repeat(20000) }], body: { data: b64u("<head".repeat(40000) + "<p>salam</p>") } } };
+  const g0 = google.gmail; google.gmail = () => ({ users: { threads: { get: async () => ({ data: { id: "hx", messages: [big] } }) } } });
+  const t0 = Date.now(); r = await tool("Gmail", "get_thread", { threadId: "hx" }); google.gmail = g0;
+  ok(r.statusCode === 200 && Date.now() - t0 < 400, "hostile mail (huge To / <head spam) parsed in " + (Date.now() - t0) + " ms"); }
 r = await tool("Gmail", "update_message_labels", { messageId: "m1", addLabelIds: [], removeLabelIds: ["INBOX"] });
 ok(r.json().payload.labelIds.length === 0, "update_message_labels (archive)");
 r = await tool("Gmail", "reply", { messageId: "m1", body: "Oldu, göndərirəm.", replyAll: true });
@@ -186,6 +201,7 @@ r = await sampleReq({ messages: convo, tools, modelTier: "quick" });
 const t1 = r.json();
 ok(t1.stop === "tool_use" && t1.calls[0].name === "search_mail" && t1.calls[0].input.query === "hesabat", "sample: tool call returned to the page");
 if (PROVIDER === "gemini") ok(aiCalls.at(-1).body.generationConfig.thinkingConfig?.thinkingLevel === "minimal" && aiCalls.at(-1).url.includes("flash-lite") && aiCalls.at(-1).body.contents[0].parts[1].inlineData.mimeType === "image/png", "gemini: quick tier → lite model, image inline");
+ok((await sampleReq({ messages: [{ role: "user", content: "başqa söhbət" }, { role: "assistant", raw: t1.raw }, { role: "user", toolResults: [{ id: t1.calls[0].id, name: "search_mail", output: "x" }] }], tools, turn: t1.turn })).statusCode === 400, "turn ticket only continues its own conversation");
 r = await sampleReq({ messages: [...convo, { role: "assistant", raw: t1.raw }, { role: "user", toolResults: [{ id: t1.calls[0].id, name: "search_mail", output: "2 məktub tapıldı" }] }], tools, turn: t1.turn });
 ok(r.json().stop === "end" && r.json().text === "Hazırdır: 2 məktub tapıldı", "sample: tool result round → final answer");
 if (PROVIDER === "gemini") { const c = aiCalls.at(-1).body.contents; ok(c[1].parts[0].thoughtSignature === "sig123" && c[2].parts[0].functionResponse.id === "fc1", "gemini: thought signature + call id echoed back"); }
@@ -196,6 +212,13 @@ ok(us.chat_msgs === 2, "tool rounds not double-counted (2 answers = 2 requests)"
 await sampleReq({ messages: [{ role: "user", content: "3" }] });
 r = await sampleReq({ messages: [{ role: "user", content: "4" }] });
 ok(r.statusCode === 402 && r.json().detail.limit === 3, "free AI quota → 402");
+
+// attachment parsing in an isolated worker
+{ const fs = await import("node:fs");
+  const xl = fs.existsSync("/tmp/claude-0/t.xlsx") ? fs.readFileSync("/tmp/claude-0/t.xlsx") : null;
+  if (xl) { r = await app.inject({ method: "POST", url: "/api/parse", headers: H, payload: { name: "a.xlsx", data: xl.toString("base64") } }); ok(r.statusCode === 200 && /alma,3/.test(r.json().text), "Excel attachment parsed on the server"); }
+  const bomb = fs.existsSync("/tmp/claude-0/bomb.docx") ? fs.readFileSync("/tmp/claude-0/bomb.docx") : null;
+  if (bomb) { r = await app.inject({ method: "POST", url: "/api/parse", headers: H, payload: { name: "b.docx", data: bomb.toString("base64") } }); ok(r.statusCode === 422 && /böyük/.test(r.json().message), "zip bomb refused before inflating"); } }
 
 // billing
 ok((await app.inject({ method: "POST", url: "/webhooks/revenuecat", payload: {} })).statusCode === 401, "webhook auth");

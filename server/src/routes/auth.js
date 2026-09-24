@@ -1,4 +1,4 @@
-import { google } from "googleapis";
+import { google } from "../gapi.js";
 import { createHash } from "node:crypto";
 import { config } from "../config.js";
 import { one, q } from "../db.js";

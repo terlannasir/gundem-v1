@@ -7,14 +7,27 @@ export async function issueToken(userId) {
   return new SignJWT({ sub: userId, v: u?.token_version ?? 0 }).setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime("30d").sign(config.jwtSecret);
 }
 
+// requireUser runs on every API call; keep the user row for 30 s (cleared on sign-out-all / delete / plan change)
+const userCache = new Map();   // id -> { user, exp }
+export function forgetUser(id) { userCache.delete(id); }
+async function loadUser(id) {
+  const hit = userCache.get(id);
+  if (hit && hit.exp > Date.now()) return hit.user;
+  const user = await one("select * from users where id = $1 and deleted_at is null", [id]);
+  if (userCache.size > 5000) userCache.delete(userCache.keys().next().value);
+  if (user) userCache.set(id, { user, exp: Date.now() + 30000 });
+  return user;
+}
+
 /** Fastify preHandler: requires "Authorization: Bearer <jwt>", attaches req.user */
 export async function requireUser(req, reply) {
   const h = req.headers.authorization || "";
   const tok = h.startsWith("Bearer ") ? h.slice(7) : null;
   if (!tok) return reply.code(401).send({ error: "unauthorized" });
   try {
-    const { payload } = await jwtVerify(tok, config.jwtSecret);
-    const user = await one("select * from users where id = $1 and deleted_at is null", [payload.sub]);
+    const { payload } = await jwtVerify(tok, config.jwtSecret, { algorithms: ["HS256"] });
+    const u0 = await loadUser(String(payload.sub));
+    const user = u0 && { ...u0 };
     if (!user || (payload.v ?? 0) !== user.token_version) return reply.code(401).send({ error: "unauthorized" });
     if (user.plan === "premium" && user.plan_until && new Date(user.plan_until) < new Date()) user.plan = "free";
     req.user = user;

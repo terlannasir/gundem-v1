@@ -95,11 +95,13 @@ function cleanMessages(list) {
 export async function sampleRequest(user, body = {}, log) {
   if (JSON.stringify(body.messages ?? null).length > MAX_BODY) throw bad("request too large");
   const messages = cleanMessages(body.messages);
+  const convoHash = (list) => createHash("sha256").update(JSON.stringify(list)).digest("base64url");
+  const prefixHash = body.turn ? convoHash(messages.slice(0, -1)) : null;   // before any shortening below
   // earlier tool results were already used by the model — resend only a short version (the latest round stays full)
   const lastTR = messages.map((m) => !!m.toolResults).lastIndexOf(true);
   messages.forEach((m, i) => { if (m.toolResults && i !== lastTR) m.toolResults = m.toolResults.map((r) => ({ ...r, output: r.output.length > 1500 ? r.output.slice(0, 1500) + "\n…[qısaldıldı]" : r.output })); });
   const tools = Array.isArray(body.tools) ? body.tools.slice(0, MAX_TOOLS).map((t) => ({ name: String(t.name).slice(0, 64), description: String(t.description || "").slice(0, 2000), inputSchema: t.inputSchema && typeof t.inputSchema === "object" ? t.inputSchema : undefined })) : undefined;
-  const tier = ["quick", "default", "complex"].includes(body.modelTier) ? body.modelTier : "default";
+  let tier = ["quick", "default", "complex"].includes(body.modelTier) ? body.modelTier : "default";
   const cacheable = !tools?.length && !body.turn;
   const ckey = cacheable ? createHash("sha256").update(user.id + "|" + tier + "|" + !!body.json + "|" + JSON.stringify(messages)).digest("base64url") : null;
   const hit = ckey && answerCache.get(ckey);
@@ -108,8 +110,11 @@ export async function sampleRequest(user, body = {}, log) {
   if (body.turn) {                                // follow-up round of a tool-using answer
     turn = turns.get(String(body.turn));
     if (!turn || turn.uid !== user.id || turn.exp < Date.now()) throw bad("unknown turn");
-    if (++turn.n > 12) throw bad("too many tool rounds");
-    round = turn.n;
+    // the ticket only continues THIS conversation: same history + the model's own tool call + results for exactly those calls
+    const lastMsg = messages[messages.length - 1];
+    if (turn.h !== prefixHash || !lastMsg?.toolResults || !lastMsg.toolResults.every((r) => turn.calls.includes(r.id))) throw bad("turn does not match the conversation");
+    if (++turn.n > 8) throw bad("too many tool rounds");
+    round = turn.n; tier = turn.tier;
   } else await checkQuota(user);
   const system = [
     `Sən "Gündəm" tətbiqinin içində ${user.name || "istifadəçi"} üçün işləyən köməkçisən.`,
@@ -118,10 +123,17 @@ export async function sampleRequest(user, body = {}, log) {
     body.json ? "Cavabı yalnız etibarlı JSON kimi qaytar — izah və ``` olmadan." : "",
   ].filter(Boolean).join("\n");
   const cap = body.json ? 1500 : tier === "quick" ? 1200 : 3000;   // output cap per answer (JSON brief/sort are short)
-  const r = await generate({ tier, system, messages, tools, maxTokens: Math.min(Number(body.maxTokens) || cap, 8000), json: !!body.json });
+  const r = await generate({ tier, system, messages, tools, maxTokens: turn ? cap : Math.min(Number(body.maxTokens) || cap, 8000), json: !!body.json });
   await record(user.id, { countRequest: round === 0, model: r.model, usage: r.usage });
   log?.info({ ai: { user: user.id, tier, json: !!body.json, tools: tools?.length || 0, round, model: r.model, in: r.usage.in, out: r.usage.out, thoughts: r.usage.thoughts || 0, what: body.label || undefined } }, "ai usage");
-  if (r.calls.length) return { stop: "tool_use", text: r.text, calls: r.calls, raw: r.raw, turn: body.turn && turn ? String(body.turn) : openTurn(user.id) };
+  if (r.calls.length) {
+    const id = body.turn && turn ? String(body.turn) : openTurn(user.id);
+    const t = turns.get(id);
+    // what the next request must look like: everything sent now (as the client sent it) + this assistant turn
+    t.h = convoHash([...cleanMessages(body.messages), { role: "assistant", raw: cleanRaw(r.raw) }]);
+    t.calls = r.calls.map((c) => String(c.id)); t.tier = tier;
+    return { stop: "tool_use", text: r.text, calls: r.calls, raw: r.raw, turn: id };
+  }
   if (body.turn) turns.delete(String(body.turn));
   const res = { stop: "end", text: r.text, truncated: r.truncated };
   if (ckey && r.text && !r.truncated) {

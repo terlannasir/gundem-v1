@@ -174,6 +174,13 @@
     ls.keys().forEach(function (k) { if (k.indexOf("gundem.") === 0) ls.del(k); });
     token = null; location.reload();
   }
+  window.GundemTools = {
+    parseOffice: async function (bytes, name, kind) {
+      var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+      var r = await api("/api/parse", { body: { name: name, kind: kind, data: b64(u) } });
+      return r.text || "";
+    }
+  };
   window.GundemAuth = { signOut: signOut, deleteAccount: deleteAccount, me: function () { return me; } };
 
   // Settings → "Hesabı sil" (App Store rule 5.1.1(v)); shown under the data section
@@ -185,9 +192,14 @@
       wrap.innerHTML = '<p class="meta" style="margin:0 0 8px">Hesab: ' + (me && me.email ? me.email.replace(/[<>&"]/g, "") : "") + (me && me.plan === "premium" ? " · Premium" : " · Pulsuz plan") +
         (me && me.limits ? " · AI: " + (me.usage ? me.usage.ai : 0) + "/" + me.limits.ai + " bu ay" : "") + '</p>' +
         '<div id="gd-lock-row"></div>' +
+        '<button class="btn ghost" type="button" id="gd-out-all" style="margin-right:8px">Bütün cihazlardan çıx</button>' +
         '<button class="btn ghost" type="button" id="gd-del" style="color:var(--rose)">Hesabı birdəfəlik sil</button><div id="gd-del-c"></div>';
       anchor.parentNode.insertBefore(wrap, anchor.nextSibling);
       renderLockRow();
+      document.getElementById("gd-out-all").addEventListener("click", function (ev) {
+        ev.currentTarget.disabled = true;
+        api("/api/signout-all", { method: "POST", body: {} }).then(function () { signOut(); }, function () { ev.currentTarget.disabled = false; });
+      });
       document.getElementById("gd-del").addEventListener("click", function () {
         var c = document.getElementById("gd-del-c");
         c.innerHTML = '<p class="note err" style="margin:10px 0">Hesabın, Google icazəsi və Gündəmdə saxlanan bütün məlumat silinəcək. Gmail, Təqvim və Drive-dakı faylların toxunulmaz qalır.</p><button class="btn" type="button" id="gd-del-yes" style="background:var(--rose);color:#fff;border-color:var(--rose)">Bəli, hesabı sil</button>';
@@ -195,7 +207,8 @@
       });
     };
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", run); else run();
-    new MutationObserver(function () { if (!document.getElementById("gd-del")) run(); }).observe(document.documentElement, { childList: true, subtree: true });
+    var root = document.querySelector('[data-view="settings"]') || document.documentElement;   // watch only the settings view
+    new MutationObserver(function () { if (!document.getElementById("gd-del")) run(); }).observe(root, { childList: true, subtree: true });
   }
 
   /* ---------------- Face ID / Touch ID lock (iOS app) ---------------- */
@@ -280,7 +293,7 @@
     var r = await api("/api/tool", { body: { server: server, tool: tool, input: input || {} }, signal: opts && opts.signal })
       .catch(function (e) { e.server = server; throw e; });
     var storedAt = Date.now();
-    if (/^(search_|list_|get_|read_)/.test(tool)) writeCache(key(server, tool, input), r.payload);
+    if (/^(search_|list_)/.test(tool)) writeCache(key(server, tool, input), r.payload);   // lists only: opened mails/docs are not kept in the browser
     return { payload: r.payload, content: [{ type: "text", text: JSON.stringify(r.payload) }], cache: { storedAt: storedAt } };
   }
   function runWatch(w) {
@@ -391,9 +404,11 @@
 
   /* ---------------- db (maps data/users/<id>/<key> → /api/state/<key>) ---------------- */
   var stateCache = null, stateAt = 0, subs = new Map();
+  var stateInflight = null;
   async function loadState(force) {
     if (!force && stateCache && Date.now() - stateAt < 5000) return stateCache;
-    stateCache = await api("/api/state"); stateAt = Date.now(); return stateCache;
+    if (!stateInflight) stateInflight = api("/api/state").then(function (s) { stateCache = s; stateAt = Date.now(); return s; }).finally(function () { stateInflight = null; });
+    return stateInflight;   // six parallel reads on boot → one request
   }
   function keyOf(path) { var m = String(path).match(/^data\/users\/[^/]+\/([a-z]+)$/); if (!m) throw err("bad_request", "Unsupported path " + path); return m[1]; }
   function snap(v) { return { exists: v !== undefined && v !== null, data: function () { return v; } }; }
@@ -456,5 +471,8 @@
 
   if (NATIVE) { try { var sp = plugin("SplashScreen"); if (sp) sp.hide(); } catch (e) {} }
   if (NATIVE) { if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initLock); else initLock(); }
+  if (!NATIVE && window.isSecureContext && "serviceWorker" in navigator) {   // app shell opens instantly next time (web / home-screen app)
+    window.addEventListener("load", function () { navigator.serviceWorker.register("/sw.js").catch(function () {}); });
+  }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
 })();

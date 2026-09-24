@@ -1,9 +1,8 @@
 // Connector-compatible tools: the same tool names, inputs and payload shapes the
 // Gündəm web app used through claude.ai connectors — now served with the user's own Google account.
-import { google } from "googleapis";
+import { google } from "./gapi.js";
 import { randomBytes } from "node:crypto";
-import mammoth from "mammoth";
-import ExcelJS from "exceljs";
+import { parseDocument, kindOf } from "./parse.js";
 
 export const SERVERS = {
   "Gmail": { scope: "gmail.modify", tools: ["search_threads", "get_thread", "get_message", "update_message_labels", "send_message", "create_draft", "reply", "forward"] },
@@ -23,7 +22,25 @@ async function pool(items, n, fn) {
 
 /* ================= Gmail ================= */
 const hdr = (m, n) => (m.payload?.headers || []).find((h) => h.name.toLowerCase() === n.toLowerCase())?.value || "";
-const splitAddrs = (s) => String(s || "").split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/).map((x) => x.trim()).filter(Boolean);
+// linear-time helpers (hostile mail must not be able to stall the event loop with regex backtracking)
+function splitAddrs(s) {
+  const out = []; let cur = "", q = false;
+  for (const ch of String(s || "").slice(0, 20000)) { if (ch === '"') q = !q; if (ch === "," && !q) { out.push(cur); cur = ""; } else cur += ch; }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean).slice(0, 200);
+}
+function stripBlocks(html) {   // drop <style>/<script>/<head> blocks with indexOf scanning
+  let out = "", i = 0; const low = html.toLowerCase();
+  while (i < html.length) {
+    const m = /<(style|script|head)\b/g; m.lastIndex = i; const hit = m.exec(low);
+    if (!hit) { out += html.slice(i); break; }
+    out += html.slice(i, hit.index);
+    const end = low.indexOf("</" + hit[1], hit.index + 1);
+    if (end < 0) break;
+    const close = low.indexOf(">", end); i = close < 0 ? html.length : close + 1;
+  }
+  return out;
+}
 const emailOf = (a) => (String(a).match(/<([^>]+)>/)?.[1] || String(a)).trim().toLowerCase();
 
 function bodyText(part) {
@@ -31,8 +48,7 @@ function bodyText(part) {
   if (part.mimeType === "text/plain" && part.body?.data && !part.filename) return Buffer.from(part.body.data, "base64url").toString("utf8");
   for (const p of part.parts || []) { const t = bodyText(p); if (t) return t; }
   if (part.mimeType === "text/html" && part.body?.data && !part.filename) {
-    return Buffer.from(part.body.data, "base64url").toString("utf8")
-      .replace(/<(style|script|head)[\s\S]*?<\/\1>/gi, "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|tr|li|h\d)>/gi, "\n")
+    return stripBlocks(Buffer.from(part.body.data, "base64url").toString("utf8").slice(0, 400000)).replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|tr|li|h\d)>/gi, "\n")
       .replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
       .replace(/[ \t]+/g, " ").replace(/\n\s*\n\s*\n+/g, "\n\n").trim();
   }
@@ -79,13 +95,22 @@ async function original(gmail, messageId) {
   return data;
 }
 
+// Thread metadata keyed by user + thread + historyId: unchanged threads are not fetched again
+// (an inbox refresh goes from 41 Gmail calls to 1 + the few threads that actually changed).
+const threadCache = new Map();
+const TC_MAX = 20000;
 const gmailTools = {
-  async search_threads(auth, i) {
+  async search_threads(auth, i, ctx = {}) {
     const gmail = google.gmail({ version: "v1", auth });
     const { data } = await gmail.users.threads.list({ userId: "me", q: String(i.query || ""), maxResults: Math.min(50, Math.max(1, Number(i.pageSize) || 20)), pageToken: i.pageToken || undefined });
     const threads = await pool(data.threads || [], 10, async (t) => {
+      const k = ctx.uid && t.historyId ? `${ctx.uid}:${t.id}:${t.historyId}` : null;
+      const hit = k && threadCache.get(k);
+      if (hit) { threadCache.delete(k); threadCache.set(k, hit); return hit; }   // LRU touch
       const { data: th } = await gmail.users.threads.get({ userId: "me", id: t.id, format: "metadata", metadataHeaders: ["From", "To", "Cc", "Subject"] });
-      return { id: th.id, viewUrl: `https://mail.google.com/mail/u/0/#all/${th.id}`, messages: (th.messages || []).map(msgMeta) };
+      const out = { id: th.id, viewUrl: `https://mail.google.com/mail/u/0/#all/${th.id}`, messages: (th.messages || []).map(msgMeta) };
+      if (k) { threadCache.set(k, out); if (threadCache.size > TC_MAX) threadCache.delete(threadCache.keys().next().value); }
+      return out;
     });
     return { threads, ...(data.nextPageToken ? { nextPageToken: data.nextPageToken } : {}) };
   },
@@ -98,6 +123,8 @@ const gmailTools = {
     const gmail = google.gmail({ version: "v1", auth });
     const id = str(i.messageId, "messageId", 200);
     if (String(i.messageFormat).toUpperCase() === "RAW") {
+      const { data: meta } = await gmail.users.messages.get({ userId: "me", id, format: "minimal" });
+      if (Number(meta.sizeEstimate || 0) > 30e6) throw toolErr("Məktub çox böyükdür (30 MB-dan çox)");
       const { data } = await gmail.users.messages.get({ userId: "me", id, format: "raw" });
       return { id: data.id, threadId: data.threadId, labelIds: data.labelIds || [], raw: data.raw };
     }
@@ -149,7 +176,9 @@ const gmailTools = {
     const to = list(i.to); if (!to.length) throw badInput("to is required");
     const gmail = google.gmail({ version: "v1", auth });
     const id = str(i.messageId, "messageId", 200);
-    const [{ data: raw }, o] = await Promise.all([gmail.users.messages.get({ userId: "me", id, format: "raw" }), original(gmail, id)]);
+    const o = await original(gmail, id);
+    if (Number(o.sizeEstimate || 0) > 24e6) throw toolErr("Məktub yönləndirmək üçün çox böyükdür — Gmail-dən yönləndir");
+    const { data: raw } = await gmail.users.messages.get({ userId: "me", id, format: "raw" });
     const subj = hdr(o, "Subject");
     const intro = `${i.forwardText ? String(i.forwardText) + "\n\n" : ""}---------- Yönləndirilmiş məktub ----------\nKimdən: ${hdr(o, "From")}\nMövzu: ${subj}\nKimə: ${hdr(o, "To")}\n(Orijinal məktub əlavədədir)`;
     const att = ["Content-Type: message/rfc822", `Content-Disposition: attachment; filename="forwarded.eml"`, "", Buffer.from(raw.raw, "base64url").toString("latin1")].join("\r\n");
@@ -193,26 +222,6 @@ async function download(drive, id) {
   const r = await drive.files.get({ fileId: id, alt: "media" }, { responseType: "arraybuffer" });
   return Buffer.from(r.data);
 }
-async function pdfText(buf) {
-  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const doc = await pdfjs.getDocument({ data: new Uint8Array(buf), isEvalSupported: false, useSystemFonts: false, disableFontFace: true }).promise;
-  const out = [];
-  for (let p = 1; p <= Math.min(doc.numPages, 80); p++) {
-    const c = await (await doc.getPage(p)).getTextContent();
-    out.push(c.items.map((x) => x.str + (x.hasEOL ? "\n" : " ")).join(""));
-  }
-  await doc.destroy();
-  return out.join("\n\n");
-}
-async function xlsxText(buf) {
-  const wb = new ExcelJS.Workbook(); await wb.xlsx.load(buf);
-  return wb.worksheets.map((ws) => {
-    const rows = [];
-    ws.eachRow({ includeEmpty: false }, (row) => { if (rows.length < 2000) rows.push(row.values.slice(1).map((v) => { const x = v && typeof v === "object" ? (v.result ?? v.text ?? v.richText?.map((r) => r.text).join("") ?? "") : v ?? ""; const s = String(x); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }).join(",")); });
-    return `## ${ws.name}\n${rows.join("\n")}`;
-  }).join("\n\n");
-}
-const timeBox = (p, ms = 20000) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(toolErr("Faylı oxumaq çox uzun çəkdi")), ms))]);
 const driveTools = {
   async search_files(auth, i) {
     const drive = google.drive({ version: "v3", auth });
@@ -234,9 +243,7 @@ const driveTools = {
     if (mt === "application/vnd.google-apps.document") text = await exp("text/markdown").catch(() => exp("text/plain"));
     else if (mt === "application/vnd.google-apps.spreadsheet") text = await exp("text/csv");
     else if (mt === "application/vnd.google-apps.presentation" || mt === "application/vnd.google-apps.drawing") text = await exp("text/plain");
-    else if (mt === "application/pdf") text = await timeBox(pdfText(await download(drive, id)));
-    else if (/wordprocessingml/.test(mt)) text = (await timeBox(mammoth.extractRawText({ buffer: await download(drive, id) }))).value;
-    else if (/spreadsheetml/.test(mt)) text = await timeBox(xlsxText(await download(drive, id)));
+    else if (kindOf(mt)) text = await parseDocument(await download(drive, id), kindOf(mt));   // isolated worker
     else if (/^text\/|json|xml|csv|markdown/.test(mt)) text = (await download(drive, id)).toString("utf8");
     else throw toolErr(`Bu fayl növü oxuna bilmir: ${mt}`);
     return { id, title: f.name, mimeType: mt, fileContent: text.slice(0, 400000) };
@@ -264,11 +271,12 @@ const driveTools = {
 const IMPL = { "Gmail": gmailTools, "Google Calendar": calendarTools, "Google Drive": driveTools };
 
 /** Run one tool. Google auth failures become {status:409, code:"needs_reauth"}. */
-export async function runTool(auth, server, tool, input) {
+export function forgetUserThreads(uid) { for (const k of threadCache.keys()) if (k.startsWith(uid + ":")) threadCache.delete(k); }
+export async function runTool(auth, server, tool, input, ctx = {}) {
   const impl = IMPL[server]?.[tool];
   if (!impl || !SERVERS[server].tools.includes(tool)) throw Object.assign(new Error(`Unknown tool ${server}/${tool}`), { status: 400, code: "not_in_manifest" });
   try {
-    return await impl(auth, input && typeof input === "object" ? input : {});
+    return await impl(auth, input && typeof input === "object" ? input : {}, ctx);
   } catch (e) {
     if (e.code === "tool_error" || e.code === "bad_request") throw e;
     const st = e.response?.status || e.status || (typeof e.code === "number" ? e.code : 0);

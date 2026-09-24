@@ -178,14 +178,25 @@ Xərci azaltmaq üçün:
 
 ## Nə yoxlanılıb
 
-- **Server testləri — 61/61** (Gemini) və **59/59** (Claude): real PostgreSQL üzərində, Google API-ləri və AI cavabları saxta (mock). Əhatə edir: bütün Gmail/Təqvim/Drive alətləri (cavab, hamıya cavab, yönləndirmə, UTF-8 və vergüllü adlar, PDF/Word/Excel oxuma), PKCE ilə giriş, AI alət çağırışları və limitlər (limitdən yan keçmə cəhdi daxil), bütün cihazlardan çıxış, hesab silmə.
-- **Brauzer testi — 35/35**: real server və real interfeys Chromium-da. Əhatə edir: saxta giriş linklərinin rədd edilməsi, veb və iOS girişi (PKCE), poçt, cavab göndərmə, brifinq, sənədlər, alət çağıran söhbət, ayarlar, Face ID kilidi, çıxış.
+- **Server testləri — 75/75** (Gemini) və **68/68** (Claude): real PostgreSQL üzərində; Google API-ləri və AI cavabları saxtadır (mock). Əhatə edir: bütün Gmail/Təqvim/Drive alətləri, PDF/Word/Excel oxuma (zip-bomba daxil), PKCE girişi, AI limitləri və limitdən yan keçmə cəhdləri, model ehtiyatı (bağlanmış model, limit dolması), CSP və keş başlıqları, bütün cihazlardan çıxış, hesab silmə.
+- **Brauzer testi — 38/38**: real server və real interfeys Chromium-da. Əhatə edir: saxta giriş linkləri, veb və iOS girişi, poçt, arxiv, cavab, brifinq, sənədlər, söhbət, Face ID, oflayn keş (service worker) və CSP pozuntularının olmaması.
 - **İnterfeys testləri** (əvvəlki 3 dəst): 0 xəta.
 - **Yoxlanmayıb:** real iPhone-da Face ID və Google girişi (TestFlight build-dən sonra).
 
-## Təhlükəsizlik qeydləri
+## Təhlükəsizlik
 
-- Giriş PKCE ilə qorunur: token heç vaxt URL-də görünmür, başqasının göndərdiyi giriş linki və ya kodu işləmir.
-- Hesab silinəndə Google icazəsi də ləğv olunur.
-- Serverdə `POST /api/signout-all` bütün cihazlardakı sessiyaları bağlayır.
-- Supabase bağlantısı şifrəlidir, amma sertifikat yoxlanmır (`rejectUnauthorized: false`) — ictimai buraxılışdan əvvəl Supabase CA sertifikatını əlavə etmək tövsiyə olunur.
+- **Giriş:** PKCE ilə qorunur. Token URL-də görünmür, başqasının göndərdiyi link və ya kod işləmir.
+- **Sessiyalar:** Ayarlar → «Bütün cihazlardan çıx» bütün sessiyaları dərhal bağlayır. Hesab silinəndə Google icazəsi də ləğv olunur.
+- **Veb:** sərt CSP (yalnız öz skriptlərimiz və versiyası sabitlənmiş, SRI yoxlamalı iki kitabxana), HSTS və clickjacking qoruması. Poçtdakı linklər və HTML zərərsizləşdirilir.
+- **Fayllar:** PDF/Word/Excel faylları serverdə ayrıca, yaddaşı və vaxtı məhdud prosesdə açılır. Zip-bomba əvvəlcədən rədd edilir. Brauzerdəki köhnə, zəif xlsx kitabxanası çıxarılıb.
+- **AI:** limitlər istifadəçi hesabına bağlıdır. Hər alət çağırışı serverin verdiyi biletlə yoxlanır, ona görə limitdən yan keçmək olmur. Sorğu limiti IP-yə yox, hesaba bağlıdır.
+- **Google tokenləri:** bazada AES-GCM ilə şifrəli saxlanılır. Loglara nə token, nə də URL parametrləri düşür.
+- **Baza TLS (tövsiyə):** Supabase → Project Settings → Database → **SSL Configuration → Download certificate**. Faylın bütün mətnini Render → Environment-də `DATABASE_CA` adlı dəyişənə yapışdır. Bundan sonra server bazanın sertifikatını tam yoxlayacaq. Bu dəyişən olmasa, bağlantı yenə şifrəli qalır, sadəcə sertifikat yoxlanmır.
+- **Qalan risk (iOS):** `gundem://` sxemini başqa bir tətbiq də qeydiyyatdan keçirə bilər. PKCE sayəsində o tətbiq kodu ələ keçirsə belə, ondan istifadə edə bilməz. Tam həll (Universal Links / ASWebAuthenticationSession) üçün yeni native build lazımdır, bunu sonra etmək olar.
+
+## Sürət
+
+- Səhifə və skriptlər əvvəlcədən sıxılır (brotli). Təkrar açılışda 304 qayıdır, versiyalı fayllar isə il boyu keşdə qalır.
+- Service worker tətbiqin qabığını telefonda saxlayır. Server yatmış olsa belə (Render free), interfeys dərhal açılır və məlumatlar gəlir-gəlməz görünür.
+- Gmail metadata keşi, Google kitabxanasının yüngül paketlərə bölünməsi (~100 MB az RAM) və baza bağlantılarının açıq saxlanması tətbiq olunub.
+- **Tövsiyə:** Render-in pulsuz serveri 15 dəqiqə sorğu gəlməsə yatır. [cron-job.org](https://cron-job.org)-da pulsuz iş yarat: URL `https://gundem-sesi.onrender.com/health`, hər 10 dəqiqədən bir. Bununla server ayıq qalacaq.

@@ -6,7 +6,8 @@
 //   { role: "assistant", raw: <opaque provider content> }  – echo of a tool-calling turn, sent back verbatim
 //   { role: "user", toolResults: [{ id, name, output: "text", isError? }] }
 // Result: { text, truncated, calls: [{id,name,input}], raw, model, usage: {in, out, cacheRead} }
-import Anthropic from "@anthropic-ai/sdk";
+// the Anthropic SDK is only loaded when Claude is the provider (faster boot, less RAM on the free tier)
+const Anthropic = process.env.AI_PROVIDER === "anthropic" || (!process.env.AI_PROVIDER && !process.env.GEMINI_API_KEY) ? (await import("@anthropic-ai/sdk")).default : null;
 import { config } from "./config.js";
 
 const fail = (status, code, message) => Object.assign(new Error(message || code), { status, code: code });
